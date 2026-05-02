@@ -842,7 +842,19 @@ namespace nvrhi::vulkan
                             .setAnisotropyEnable(anisotropyEnable)
                             .setMaxAnisotropy(anisotropyEnable ? desc.maxAnisotropy : 1.f)
                             .setCompareEnable(desc.reductionType == SamplerReductionType::Comparison)
-                            .setCompareOp(vk::CompareOp::eLess)
+                            .setCompareOp([&]{
+                                // Vulkan compares Dref[op]D, HLSL compares D[op]ref — flip Less<->Greater.
+                                switch (desc.compareFunc) {
+                                    case ComparisonFunc::Less:           return vk::CompareOp::eGreater;
+                                    case ComparisonFunc::LessOrEqual:    return vk::CompareOp::eGreaterOrEqual;
+                                    case ComparisonFunc::Greater:        return vk::CompareOp::eLess;
+                                    case ComparisonFunc::GreaterOrEqual: return vk::CompareOp::eLessOrEqual;
+                                    case ComparisonFunc::Equal:          return vk::CompareOp::eEqual;
+                                    case ComparisonFunc::NotEqual:       return vk::CompareOp::eNotEqual;
+                                    case ComparisonFunc::Never:          return vk::CompareOp::eNever;
+                                    default:                             return vk::CompareOp::eAlways;
+                                }
+                            }())
                             .setMinLod(0.f)
                             .setMaxLod(std::numeric_limits<float>::max())
                             .setBorderColor(pickSamplerBorderColor(desc));
