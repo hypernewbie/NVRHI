@@ -240,10 +240,22 @@ namespace nvrhi::vulkan
             m_Context.warning("Opacity micro-maps are not currently supported by RTXMU.");
         }
 #endif
-        auto pipelineInfo = vk::PipelineCacheCreateInfo();
+        auto pipelineInfo = vk::PipelineCacheCreateInfo()
+            .setInitialDataSize(desc.pipelineCacheInitialDataSize)
+            .setPInitialData(desc.pipelineCacheInitialData);
         vk::Result res = m_Context.device.createPipelineCache(&pipelineInfo,
             m_Context.allocationCallbacks,
             &m_Context.pipelineCache);
+
+        // If the driver rejects the supplied blob (stale UUID, mismatched version), retry empty.
+        if (res != vk::Result::eSuccess && desc.pipelineCacheInitialDataSize != 0)
+        {
+            m_Context.warning("Pipeline cache initial data rejected by driver; creating empty cache.");
+            auto emptyInfo = vk::PipelineCacheCreateInfo();
+            res = m_Context.device.createPipelineCache(&emptyInfo,
+                m_Context.allocationCallbacks,
+                &m_Context.pipelineCache);
+        }
 
         if (res != vk::Result::eSuccess)
         {
@@ -330,6 +342,28 @@ namespace nvrhi::vulkan
             return nullptr;
 
         return CommandListLifetimeTrackerHandle::Create(new CommandListLifetimeTracker(m_Context, queue));
+    }
+
+    bool Device::getPipelineCacheData(std::vector<uint8_t>& outData)
+    {
+        outData.clear();
+        if (!m_Context.pipelineCache)
+            return false;
+
+        size_t size = 0;
+        vk::Result res = m_Context.device.getPipelineCacheData(m_Context.pipelineCache, &size, nullptr);
+        if (res != vk::Result::eSuccess || size == 0)
+            return false;
+
+        outData.resize(size);
+        res = m_Context.device.getPipelineCacheData(m_Context.pipelineCache, &size, outData.data());
+        if (res != vk::Result::eSuccess)
+        {
+            outData.clear();
+            return false;
+        }
+        outData.resize(size);
+        return true;
     }
 
     void Device::runGarbageCollection()
