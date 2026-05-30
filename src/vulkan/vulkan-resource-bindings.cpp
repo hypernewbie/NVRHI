@@ -177,19 +177,21 @@ namespace nvrhi::vulkan
     {
         // create the descriptor set layout object
         
+        // [UAA] - START - let bindless layouts opt out while preserving upstream's default
+        const bool useUpdateAfterBind = isBindless && bindlessDesc.updateAfterBind;
+        // [UAA] - END
+
         auto descriptorSetLayoutInfo = vk::DescriptorSetLayoutCreateInfo()
             .setBindingCount(uint32_t(vulkanLayoutBindings.size()))
-            .setPBindings(vulkanLayoutBindings.data());
+            .setPBindings(vulkanLayoutBindings.data())
+            .setFlags(useUpdateAfterBind ? vk::DescriptorSetLayoutCreateFlagBits::eUpdateAfterBindPool : vk::DescriptorSetLayoutCreateFlags()); // [UAA]
 
-        // Tables are CPU-written while in-flight command buffers bind them, which needs
-        // UPDATE_AFTER_BIND. Uniform buffers take their own feature, which the app may not have enabled.
+        // [UAA] - START - keep upstream update-after-bind behavior configurable
         std::vector<vk::DescriptorBindingFlags> bindFlag(vulkanLayoutBindings.size(),
-            vk::DescriptorBindingFlags(vk::DescriptorBindingFlagBits::ePartiallyBound));
+            vk::DescriptorBindingFlagBits::ePartiallyBound);
 
-        if (isBindless)
+        if (useUpdateAfterBind)
         {
-            descriptorSetLayoutInfo.setFlags(vk::DescriptorSetLayoutCreateFlagBits::eUpdateAfterBindPool);
-
             for (size_t i = 0; i < vulkanLayoutBindings.size(); ++i)
             {
                 if (vulkanLayoutBindings[i].descriptorType == vk::DescriptorType::eUniformBuffer
@@ -200,6 +202,7 @@ namespace nvrhi::vulkan
                     | vk::DescriptorBindingFlagBits::eUpdateUnusedWhilePending;
             }
         }
+        // [UAA] - END
 
         auto extendedInfo = vk::DescriptorSetLayoutBindingFlagsCreateInfo()
             .setBindingCount(uint32_t(vulkanLayoutBindings.size()))
@@ -685,8 +688,8 @@ namespace nvrhi::vulkan
         auto poolInfo = vk::DescriptorPoolCreateInfo()
             .setPoolSizeCount(uint32_t(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
-            .setFlags(vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind)
-            .setMaxSets(1);
+            .setMaxSets(1)
+            .setFlags(layout->getBindlessDesc()->updateAfterBind ? vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind : vk::DescriptorPoolCreateFlags()); // [UAA]
 
         vk::Result res = m_Context.device.createDescriptorPool(&poolInfo,
                                                              m_Context.allocationCallbacks,
