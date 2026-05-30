@@ -177,11 +177,18 @@ namespace nvrhi::vulkan
     {
         // create the descriptor set layout object
         
+        const bool useUpdateAfterBind = isBindless && bindlessDesc.updateAfterBind;
+
+        vk::DescriptorBindingFlags bindingFlags = vk::DescriptorBindingFlagBits::ePartiallyBound;
+        if (useUpdateAfterBind)
+            bindingFlags |= vk::DescriptorBindingFlagBits::eUpdateAfterBind | vk::DescriptorBindingFlagBits::eUpdateUnusedWhilePending;
+
         auto descriptorSetLayoutInfo = vk::DescriptorSetLayoutCreateInfo()
             .setBindingCount(uint32_t(vulkanLayoutBindings.size()))
-            .setPBindings(vulkanLayoutBindings.data());
+            .setPBindings(vulkanLayoutBindings.data())
+            .setFlags(useUpdateAfterBind ? vk::DescriptorSetLayoutCreateFlagBits::eUpdateAfterBindPool : vk::DescriptorSetLayoutCreateFlags());
 
-        std::vector<vk::DescriptorBindingFlags> bindFlag(vulkanLayoutBindings.size(), vk::DescriptorBindingFlagBits::ePartiallyBound);
+        std::vector<vk::DescriptorBindingFlags> bindFlag(vulkanLayoutBindings.size(), bindingFlags);
 
         auto extendedInfo = vk::DescriptorSetLayoutBindingFlagsCreateInfo()
             .setBindingCount(uint32_t(vulkanLayoutBindings.size()))
@@ -665,7 +672,8 @@ namespace nvrhi::vulkan
         auto poolInfo = vk::DescriptorPoolCreateInfo()
             .setPoolSizeCount(uint32_t(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
-            .setMaxSets(1);
+            .setMaxSets(1)
+            .setFlags(layout->getBindlessDesc()->updateAfterBind ? vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind : vk::DescriptorPoolCreateFlags());
 
         vk::Result res = m_Context.device.createDescriptorPool(&poolInfo,
                                                              m_Context.allocationCallbacks,
