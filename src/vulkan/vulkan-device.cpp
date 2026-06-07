@@ -366,6 +366,19 @@ namespace nvrhi::vulkan
         return true;
     }
 
+    // [UAA] Size-only pipeline cache query for incremental persistence; no full serialise.
+    size_t Device::getPipelineCacheDataSize()
+    {
+        if (!m_Context.pipelineCache)
+            return 0;
+
+        size_t size = 0;
+        vk::Result res = m_Context.device.getPipelineCacheData(m_Context.pipelineCache, &size, nullptr);
+        if (res != vk::Result::eSuccess)
+            return 0;
+        return size;
+    }
+
     void Device::runGarbageCollection()
     {
         for (auto& m_Queue : m_Queues)

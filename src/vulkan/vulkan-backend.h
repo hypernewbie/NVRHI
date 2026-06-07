@@ -1193,6 +1193,7 @@ namespace nvrhi::vulkan
         void queueSignalSemaphore(CommandQueue executionQueue, VkSemaphore semaphore, uint64_t value) override;
         uint64_t queueGetCompletedInstance(CommandQueue queue) override;
         bool getPipelineCacheData(std::vector<uint8_t>& outData) override;
+        size_t getPipelineCacheDataSize() override; // [UAA]
 
     private:
         // Warning m_AftermathCrashDump helper must be first due to reverse destruction order
