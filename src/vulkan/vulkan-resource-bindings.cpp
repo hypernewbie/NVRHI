@@ -186,9 +186,9 @@ namespace nvrhi::vulkan
             .setPBindings(vulkanLayoutBindings.data())
             .setFlags(useUpdateAfterBind ? vk::DescriptorSetLayoutCreateFlagBits::eUpdateAfterBindPool : vk::DescriptorSetLayoutCreateFlags()); // [UAA]
 
-        // [UAA] - START - keep upstream update-after-bind behavior configurable
+        // [UAA] - START - apply optional update-after-bind, honoring Vulkan's uniform-buffer feature gate
         std::vector<vk::DescriptorBindingFlags> bindFlag(vulkanLayoutBindings.size(),
-            vk::DescriptorBindingFlagBits::ePartiallyBound);
+            vk::DescriptorBindingFlags(vk::DescriptorBindingFlagBits::ePartiallyBound));
 
         if (useUpdateAfterBind)
         {

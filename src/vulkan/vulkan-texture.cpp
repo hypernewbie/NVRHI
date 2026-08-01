@@ -866,6 +866,8 @@ namespace nvrhi::vulkan
                             .setAnisotropyEnable(anisotropyEnable)
                             .setMaxAnisotropy(anisotropyEnable ? desc.maxAnisotropy : 1.f)
                             .setCompareEnable(desc.reductionType == SamplerReductionType::Comparison)
+                            // [UAA] - START - honour SamplerDesc::compareFunc with HLSL comparison semantics
+                            // (upstream hardcodes eLess here)
                             .setCompareOp([&]{
                                 // Vulkan compares Dref[op]D, HLSL compares D[op]ref — flip Less<->Greater.
                                 switch (desc.compareFunc) {
@@ -879,6 +881,7 @@ namespace nvrhi::vulkan
                                     default:                             return vk::CompareOp::eAlways;
                                 }
                             }())
+                            // [UAA] - END
                             .setMinLod(0.f)
                             .setMaxLod(std::numeric_limits<float>::max())
                             .setBorderColor(pickSamplerBorderColor(desc));
