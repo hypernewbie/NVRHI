@@ -177,18 +177,20 @@ namespace nvrhi::vulkan
     {
         // create the descriptor set layout object
         
+        // [UAA] - START - opt-in update-after-bind for bindless tables; defaults to upstream behaviour
         const bool useUpdateAfterBind = isBindless && bindlessDesc.updateAfterBind;
 
         vk::DescriptorBindingFlags bindingFlags = vk::DescriptorBindingFlagBits::ePartiallyBound;
         if (useUpdateAfterBind)
             bindingFlags |= vk::DescriptorBindingFlagBits::eUpdateAfterBind | vk::DescriptorBindingFlagBits::eUpdateUnusedWhilePending;
+        // [UAA] - END
 
         auto descriptorSetLayoutInfo = vk::DescriptorSetLayoutCreateInfo()
             .setBindingCount(uint32_t(vulkanLayoutBindings.size()))
             .setPBindings(vulkanLayoutBindings.data())
-            .setFlags(useUpdateAfterBind ? vk::DescriptorSetLayoutCreateFlagBits::eUpdateAfterBindPool : vk::DescriptorSetLayoutCreateFlags());
+            .setFlags(useUpdateAfterBind ? vk::DescriptorSetLayoutCreateFlagBits::eUpdateAfterBindPool : vk::DescriptorSetLayoutCreateFlags()); // [UAA]
 
-        std::vector<vk::DescriptorBindingFlags> bindFlag(vulkanLayoutBindings.size(), bindingFlags);
+        std::vector<vk::DescriptorBindingFlags> bindFlag(vulkanLayoutBindings.size(), bindingFlags); // [UAA] was always ePartiallyBound
 
         auto extendedInfo = vk::DescriptorSetLayoutBindingFlagsCreateInfo()
             .setBindingCount(uint32_t(vulkanLayoutBindings.size()))
@@ -673,7 +675,7 @@ namespace nvrhi::vulkan
             .setPoolSizeCount(uint32_t(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
             .setMaxSets(1)
-            .setFlags(layout->getBindlessDesc()->updateAfterBind ? vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind : vk::DescriptorPoolCreateFlags());
+            .setFlags(layout->getBindlessDesc()->updateAfterBind ? vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind : vk::DescriptorPoolCreateFlags()); // [UAA]
 
         vk::Result res = m_Context.device.createDescriptorPool(&poolInfo,
                                                              m_Context.allocationCallbacks,

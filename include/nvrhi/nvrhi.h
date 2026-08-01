@@ -1247,7 +1247,7 @@ namespace nvrhi
         SamplerAddressMode addressV = SamplerAddressMode::Clamp;
         SamplerAddressMode addressW = SamplerAddressMode::Clamp;
         SamplerReductionType reductionType = SamplerReductionType::Standard;
-        ComparisonFunc compareFunc = ComparisonFunc::Always;
+        ComparisonFunc compareFunc = ComparisonFunc::Always; // [UAA]
 
         SamplerDesc& setBorderColor(const Color& color) { borderColor = color; return *this; }
         SamplerDesc& setMaxAnisotropy(float value) { maxAnisotropy = value; return *this; }
@@ -1261,7 +1261,7 @@ namespace nvrhi
         SamplerDesc& setAddressW(SamplerAddressMode mode) { addressW = mode; return *this; }
         SamplerDesc& setAllAddressModes(SamplerAddressMode mode) { addressU = addressV = addressW = mode; return *this; }
         SamplerDesc& setReductionType(SamplerReductionType type) { reductionType = type; return *this; }
-        SamplerDesc& setCompareFunc(ComparisonFunc func) { compareFunc = func; return *this; }
+        SamplerDesc& setCompareFunc(ComparisonFunc func) { compareFunc = func; return *this; } // [UAA]
     };
 
     class ISampler : public IResource
@@ -2057,14 +2057,14 @@ namespace nvrhi
         static_vector<BindingLayoutItem, c_MaxBindlessRegisterSpaces> registerSpaces;
 
         LayoutType layoutType = LayoutType::Immutable;
-        bool updateAfterBind = false;
+        bool updateAfterBind = false; // [UAA]
 
         BindlessLayoutDesc& setVisibility(ShaderType value) { visibility = value; return *this; }
         BindlessLayoutDesc& setFirstSlot(uint32_t value) { firstSlot = value; return *this; }
         BindlessLayoutDesc& setMaxCapacity(uint32_t value) { maxCapacity = value; return *this; }
         BindlessLayoutDesc& addRegisterSpace(const BindingLayoutItem& value) { registerSpaces.push_back(value); return *this; }
         BindlessLayoutDesc& setLayoutType(LayoutType value) { layoutType = value; return *this; }
-        BindlessLayoutDesc& setUpdateAfterBind(bool value) { updateAfterBind = value; return *this; }
+        BindlessLayoutDesc& setUpdateAfterBind(bool value) { updateAfterBind = value; return *this; } // [UAA]
     };
 
     class IBindingLayout : public IResource

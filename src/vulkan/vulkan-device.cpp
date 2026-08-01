@@ -240,6 +240,7 @@ namespace nvrhi::vulkan
             m_Context.warning("Opacity micro-maps are not currently supported by RTXMU.");
         }
 #endif
+        // [UAA] - START - seed the pipeline cache from desc, falling back to empty if rejected
         auto pipelineInfo = vk::PipelineCacheCreateInfo()
             .setInitialDataSize(desc.pipelineCacheInitialDataSize)
             .setPInitialData(desc.pipelineCacheInitialData);
@@ -256,6 +257,7 @@ namespace nvrhi::vulkan
                 m_Context.allocationCallbacks,
                 &m_Context.pipelineCache);
         }
+        // [UAA] - END
 
         if (res != vk::Result::eSuccess)
         {
@@ -344,6 +346,7 @@ namespace nvrhi::vulkan
         return CommandListLifetimeTrackerHandle::Create(new CommandListLifetimeTracker(m_Context, queue));
     }
 
+    // [UAA] - START - pipeline cache export, plus a cheap size-only query
     bool Device::getPipelineCacheData(std::vector<uint8_t>& outData)
     {
         outData.clear();
@@ -366,7 +369,7 @@ namespace nvrhi::vulkan
         return true;
     }
 
-    // [UAA] Size-only pipeline cache query for incremental persistence; no full serialise.
+    // Size-only pipeline cache query for incremental persistence; no full serialise.
     size_t Device::getPipelineCacheDataSize()
     {
         if (!m_Context.pipelineCache)
@@ -378,6 +381,7 @@ namespace nvrhi::vulkan
             return 0;
         return size;
     }
+    // [UAA] - END
 
     void Device::runGarbageCollection()
     {

@@ -1192,7 +1192,7 @@ namespace nvrhi::vulkan
         void queueWaitForSemaphore(CommandQueue waitQueue, VkSemaphore semaphore, uint64_t value) override;
         void queueSignalSemaphore(CommandQueue executionQueue, VkSemaphore semaphore, uint64_t value) override;
         uint64_t queueGetCompletedInstance(CommandQueue queue) override;
-        bool getPipelineCacheData(std::vector<uint8_t>& outData) override;
+        bool getPipelineCacheData(std::vector<uint8_t>& outData) override; // [UAA]
         size_t getPipelineCacheDataSize() override; // [UAA]
 
     private:
