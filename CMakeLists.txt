@@ -58,8 +58,8 @@ if(NVRHI_WITH_DX12)
 endif()
 
 if(NVRHI_WITH_RTXMU)
-    set(NVRHI_RTXMU_GIT_REPOSITORY "https://github.com/hypernewbie/RTXMU.git" CACHE STRING "RTXMU git repository") // [UAA]
-    set(NVRHI_RTXMU_GIT_TAG "yolo" CACHE STRING "RTXMU git tag or commit") // [UAA] 
+    set(NVRHI_RTXMU_GIT_REPOSITORY "https://github.com/hypernewbie/RTXMU.git" CACHE STRING "RTXMU git repository") # [UAA]
+    set(NVRHI_RTXMU_GIT_TAG "yolo" CACHE STRING "RTXMU git tag or commit") # [UAA]
     set(NVRHI_RTXMU_FETCH_DIR "" CACHE STRING "Source directory for fetched RTXMU; empty uses CMake FetchContent default")
 endif()
 
