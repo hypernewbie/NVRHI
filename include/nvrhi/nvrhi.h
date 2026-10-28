@@ -65,7 +65,7 @@ namespace nvrhi
 {
     // Version of the public API provided by NVRHI.
     // Increment this when any changes to the API are made.
-    static constexpr uint32_t c_HeaderVersion = 27;
+    static constexpr uint32_t c_HeaderVersion = 28;
 
     // Verifies that the version of the implementation matches the version of the header.
     // Returns true if they match. Use this when initializing apps using NVRHI as a shared library.
@@ -1903,7 +1903,8 @@ namespace nvrhi
 
             struct OperationClasBuildParams
             {
-                // See D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC for accepted formats and how they are interpreted
+                // One of RG32_FLOAT, RGB32_FLOAT, RG16_FLOAT, RG16_UNORM, RG16_SNORM, RG8_UNORM, RG8_SNORM
+                // or R10G10B10A2_UNORM. Two-component formats take 0 for Z.
                 Format vertexFormat = Format::RGB32_FLOAT;
 
                 // Index of the last geometry in a single CLAS
@@ -1926,6 +1927,15 @@ namespace nvrhi
 
                 // Minimum number of bits to be truncated in vertex positions across all CLAS (in the current cluster operation)
                 uint32_t minPositionTruncateBitCount = 0;
+
+                // Maximum number of opacity micromaps referenced by a single CLAS. Must be non-zero
+                // when OperationFlags::AllowOMM is set. Only the DXR cluster API reads it.
+                uint32_t maxOpacityMicromapIndexCount = 0;
+
+                // Index format of every argument's index buffer. Only the DXR cluster API reads it: NVAPI and
+                // Vulkan take indexFormat from each argument, so a DXR cluster operation cannot mix
+                // index formats across arguments.
+                OperationIndexFormat indexFormat = OperationIndexFormat::IndexFormat32bit;
             };
 
             struct OperationBlasBuildParams
@@ -1961,7 +1971,7 @@ namespace nvrhi
                 // Input Resources
                 IBuffer* inIndirectArgCountBuffer = nullptr;            // Buffer containing the number of AS to build, instantiate, or move
                 uint64_t inIndirectArgCountOffsetInBytes = 0;           // Offset (in bytes) to where the count is in the inIndirectArgCountBuffer 
-                IBuffer* inIndirectArgsBuffer = nullptr;                // Buffer of descriptor array of format IndirectTriangleClasArgs, IndirectTriangleTemplateArgs, IndirectInstantiateTemplateArgs
+                IBuffer* inIndirectArgsBuffer = nullptr;                // Buffer of descriptor array of format IndirectTriangleClasArgs, IndirectTriangleTemplateArgs, IndirectInstantiateTemplateArgs (nv:: or dxr:: layout, see ClusterApi)
                 uint64_t inIndirectArgsOffsetInBytes = 0;               // Offset (in bytes) to where the descriptor array starts inIndirectArgsBuffer
 
                 // In/Out Resources
@@ -2946,6 +2956,8 @@ namespace nvrhi
             uint32_t maxRecursionDepth = 1;
             int32_t hlslExtensionsUAV = -1;
             bool allowOpacityMicromaps = false;
+            // Required to trace against cluster BLAS. Leave off otherwise: it can slow down traversal.
+            bool allowClusters = false;
 
             PipelineDesc& addShader(const PipelineShaderDesc& value) { shaders.push_back(value); return *this; }
             PipelineDesc& addHitGroup(const PipelineHitGroupDesc& value) { hitGroups.push_back(value); return *this; }
@@ -2955,6 +2967,7 @@ namespace nvrhi
             PipelineDesc& setMaxRecursionDepth(uint32_t value) { maxRecursionDepth = value; return *this; }
             PipelineDesc& setHlslExtensionsUAV(int32_t value) { hlslExtensionsUAV = value; return *this; }
             PipelineDesc& setAllowOpacityMicromaps(bool value) { allowOpacityMicromaps = value; return *this; }
+            PipelineDesc& setAllowClusters(bool value) { allowClusters = value; return *this; }
         };
 
         class IPipeline;
@@ -3220,6 +3233,21 @@ namespace nvrhi
         uint32_t maxWaveLaneCount;
     };
 
+    // The API that runs a device's cluster operations, named after the argument layouts it
+    // reads: Nv for NVAPI and VK_NV_cluster_acceleration_structure (rt::cluster::nv), Dxr
+    // for DXR clusters (rt::cluster::dxr).
+    enum class ClusterApi : uint8_t
+    {
+        None,
+        Nv,
+        Dxr
+    };
+
+    struct RayTracingClustersFeatureInfo
+    {
+        ClusterApi api;
+    };
+
     // IMessageCallback should be implemented by the application.
     class IMessageCallback
     {
@@ -3293,6 +3321,16 @@ namespace nvrhi
     };
 
     typedef RefCountPtr<ICommandListLifetimeTracker> CommandListLifetimeTrackerHandle;
+
+    // Memory held by a command list's internal chunk pools, see ICommandList::getInternalMemoryUsage.
+    struct CommandListMemoryUsage
+    {
+        // AS build scratch chunks, in device-local memory.
+        uint64_t scratchBytes = 0;
+
+        // Upload chunks, in CPU-visible memory.
+        uint64_t uploadBytes = 0;
+    };
 
     //////////////////////////////////////////////////////////////////////////
     // ICommandList
@@ -3789,6 +3827,12 @@ namespace nvrhi
 
         // Returns the CommandListParameters structure that was used to create the command list. 
         virtual const CommandListParameters& getDesc() = 0;
+
+        // Returns the total size of the chunks created by the upload and scratch managers. The chunks are only
+        // freed when the command list is destroyed, so this never decreases. Not safe to call while another thread
+        // is recording into this command list.
+        // - DX11: Always returns zeros.
+        [[nodiscard]] virtual CommandListMemoryUsage getInternalMemoryUsage() const = 0;
     };
 
     typedef RefCountPtr<ICommandList> CommandListHandle;
