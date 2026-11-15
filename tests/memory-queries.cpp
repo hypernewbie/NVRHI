@@ -93,6 +93,46 @@ static void runD3D12BufferQueries(nvrhi::IDevice* device)
 }
 #endif
 
+#if TEST_VULKAN
+static void runVulkanFlushQueries(nvrhi::IDevice* device)
+{
+    auto vulkanDevice = (nvrhi::vulkan::IDevice*) device->getNativeObject(nvrhi::ObjectTypes::Nvrhi_VK_Device).pointer;
+    check(vulkanDevice != nullptr, "native Vulkan device");
+
+    const uint64_t alignment = vulkanDevice->getMappedBufferFlushAlignment();
+    check(alignment > 0, "flush alignment");
+
+    const uint64_t size = alignment * 4;
+    auto buffer = device->createBuffer(nvrhi::BufferDesc().setByteSize(size).setCpuAccess(nvrhi::CpuAccessMode::Write));
+    check(buffer != nullptr, "create write buffer");
+
+    auto* mapped = (uint8_t*) device->mapBuffer(buffer, nvrhi::CpuAccessMode::Write);
+    check(mapped != nullptr, "map write buffer");
+    std::memset(mapped, 0x5A, size);
+
+    check(vulkanDevice->flushMappedBuffer(buffer, 0, alignment * 2), "flush first range");
+    std::memset(mapped + alignment * 2, 0xA5, alignment * 2);
+    check(vulkanDevice->flushMappedBuffer(buffer, alignment * 2, alignment * 2), "flush second range");
+
+    auto readback = device->createBuffer(nvrhi::BufferDesc().setByteSize(size).setCpuAccess(nvrhi::CpuAccessMode::Read));
+    check(readback != nullptr, "create readback buffer");
+    auto commands = device->createCommandList();
+    commands->open();
+    commands->copyBuffer(readback, 0, buffer, 0, size);
+    commands->close();
+    device->executeCommandList(commands);
+    device->waitForIdle();
+
+    const auto* read = (const uint8_t*) device->mapBuffer(readback, nvrhi::CpuAccessMode::Read);
+    check(read != nullptr, "map readback buffer");
+    check(std::memcmp(read, mapped, size) == 0, "flushed contents match the host writes");
+    device->unmapBuffer(readback);
+    device->unmapBuffer(buffer);
+
+    std::printf("Vulkan mapped buffer flush: alignment=%" PRIu64 " bytes, two ranges flushed and read back\n", alignment);
+}
+#endif
+
 static void runQueries(nvrhi::IDevice* device)
 {
     nvrhi::MemoryRequirements requirements{123, 456};
@@ -146,6 +186,9 @@ static void runQueries(nvrhi::IDevice* device)
         check(imported && imported->queryMemoryRequirements(requirements) && requirements.size == legacy.size &&
             requirements.alignment == legacy.alignment, "Vulkan imported backing requirements");
         std::printf("Vulkan volatile/imported buffer: multiversion requirements match\n");
+#if TEST_VULKAN
+        runVulkanFlushQueries(device);
+#endif
     }
 
 #if TEST_D3D12

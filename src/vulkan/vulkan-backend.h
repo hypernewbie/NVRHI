@@ -1211,6 +1211,8 @@ namespace nvrhi::vulkan
         uint64_t queueGetCompletedInstance(CommandQueue queue) override;
         bool getPipelineCacheData(std::vector<uint8_t>& outData) override; // [UAA]
         size_t getPipelineCacheDataSize() override; // [UAA]
+        uint64_t getMappedBufferFlushAlignment() override; // [UAA]
+        bool flushMappedBuffer(IBuffer* buffer, uint64_t offset, uint64_t size) override; // [UAA]
 
     private:
         // Warning m_AftermathCrashDump helper must be first due to reverse destruction order

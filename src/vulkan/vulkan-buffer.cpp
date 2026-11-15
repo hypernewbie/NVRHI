@@ -633,6 +633,47 @@ namespace nvrhi::vulkan
         // buffer->barrier(cmd, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferRead);
     }
 
+    uint64_t Device::getMappedBufferFlushAlignment()
+    {
+        return m_Context.physicalDeviceProperties.limits.nonCoherentAtomSize;
+    }
+
+    bool Device::flushMappedBuffer(IBuffer* _buffer, uint64_t offset, uint64_t size)
+    {
+        Buffer* buffer = checked_cast<Buffer*>(_buffer);
+        const bool supported = buffer && buffer->managed && !buffer->desc.isVirtual && buffer->desc.cpuAccess == CpuAccessMode::Write;
+
+        if (!supported)
+        {
+            m_Context.error("flushMappedBuffer: the buffer must be an NVRHI-owned write buffer");
+            return false;
+        }
+
+        const uint64_t atomSize = m_Context.physicalDeviceProperties.limits.nonCoherentAtomSize;
+        const bool aligned = (offset % atomSize) == 0 && (size % atomSize) == 0;
+        const bool inBounds = offset <= buffer->desc.byteSize && size <= buffer->desc.byteSize - offset;
+
+        if (size == 0 || !aligned || !inBounds)
+        {
+            m_Context.error("flushMappedBuffer: the range is invalid");
+            return false;
+        }
+
+        vk::MappedMemoryRange range = vk::MappedMemoryRange()
+            .setMemory(buffer->memory)
+            .setOffset(offset)
+            .setSize(size);
+
+        const vk::Result res = m_Context.device.flushMappedMemoryRanges(1, &range);
+        if (res != vk::Result::eSuccess)
+        {
+            m_Context.error("flushMappedBuffer: vkFlushMappedMemoryRanges failed");
+            return false;
+        }
+
+        return true;
+    }
+
     MemoryRequirements Device::getBufferMemoryRequirements(IBuffer* _buffer)
     {
         return checked_cast<Buffer*>(_buffer)->getMemoryRequirements();
