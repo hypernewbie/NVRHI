@@ -1,4 +1,4 @@
-// Exercises optional queries on real backends, without windows or submitted GPU work.
+// Exercises optional queries and Vulkan mapped-buffer flushes on real backends. // [UAA]
 #include <nvrhi/nvrhi.h>
 #include <nvrhi/validation.h>
 #include <cstdio>
@@ -93,8 +93,9 @@ static void runD3D12BufferQueries(nvrhi::IDevice* device)
 }
 #endif
 
+// [UAA] - START - mapped buffer write flush test
 #if TEST_VULKAN
-static void runVulkanFlushQueries(nvrhi::IDevice* device)
+static void runVulkanBufferFlush(nvrhi::IDevice* device)
 {
     auto vulkanDevice = (nvrhi::vulkan::IDevice*) device->getNativeObject(nvrhi::ObjectTypes::Nvrhi_VK_Device).pointer;
     check(vulkanDevice != nullptr, "native Vulkan device");
@@ -132,6 +133,7 @@ static void runVulkanFlushQueries(nvrhi::IDevice* device)
     std::printf("Vulkan mapped buffer flush: alignment=%" PRIu64 " bytes, two ranges flushed and read back\n", alignment);
 }
 #endif
+// [UAA] - END
 
 static void runQueries(nvrhi::IDevice* device)
 {
@@ -186,9 +188,6 @@ static void runQueries(nvrhi::IDevice* device)
         check(imported && imported->queryMemoryRequirements(requirements) && requirements.size == legacy.size &&
             requirements.alignment == legacy.alignment, "Vulkan imported backing requirements");
         std::printf("Vulkan volatile/imported buffer: multiversion requirements match\n");
-#if TEST_VULKAN
-        runVulkanFlushQueries(device);
-#endif
     }
 
 #if TEST_D3D12
@@ -282,11 +281,31 @@ static void runDevice(nvrhi::IDevice* device, Messages& messages)
     check(device != nullptr, "NVRHI device");
     std::printf("Device path: raw\n");
     runQueries(device);
+
+    // [UAA] - START - mapped buffer write flush test
+#if TEST_VULKAN
+    if (device->getGraphicsAPI() == nvrhi::GraphicsAPI::VULKAN)
+    {
+        runVulkanBufferFlush(device);
+    }
+#endif
+    // [UAA] - END
+
 #if TEST_VALIDATION
     auto validation = nvrhi::validation::createValidationLayer(device);
     std::printf("Device path: validation\n");
     runQueries(validation);
+
+    // [UAA] - START - mapped buffer write flush test
+#if TEST_VULKAN
+    if (device->getGraphicsAPI() == nvrhi::GraphicsAPI::VULKAN)
+    {
+        runVulkanBufferFlush(validation);
+    }
 #endif
+    // [UAA] - END
+#endif
+
     device->waitForIdle();
     device->runGarbageCollection();
     check(messages.errors == 0, "no validation/backend errors");

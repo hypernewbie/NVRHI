@@ -633,6 +633,7 @@ namespace nvrhi::vulkan
         // buffer->barrier(cmd, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferRead);
     }
 
+    // [UAA] - START - mapped buffer write flush
     uint64_t Device::getMappedBufferFlushAlignment()
     {
         return m_Context.physicalDeviceProperties.limits.nonCoherentAtomSize;
@@ -673,6 +674,7 @@ namespace nvrhi::vulkan
 
         return true;
     }
+    // [UAA] - END
 
     MemoryRequirements Device::getBufferMemoryRequirements(IBuffer* _buffer)
     {
