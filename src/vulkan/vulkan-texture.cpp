@@ -405,7 +405,17 @@ namespace nvrhi::vulkan
         if (!texture->desc.isVirtual)
             return false;
 
-        m_Context.device.bindImageMemory(texture->image, heap->memory, offset);
+        // [UAA] - START - report a failed bind as a failed bind
+        // The Vulkan-Hpp bind throws; the other failures of this function return false.
+        try
+        {
+            m_Context.device.bindImageMemory( texture->image, heap->memory, offset );
+        }
+        catch ( const vk::SystemError& )
+        {
+            return false;
+        }
+        // [UAA] - END
 
         texture->heap = heap;
 
