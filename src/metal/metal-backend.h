@@ -149,6 +149,7 @@ namespace nvrhi::metal
     public:
         FramebufferDesc desc;
         FramebufferInfoEx framebufferInfo;
+        std::vector<ResourceHandle> resources; // [UAA] Own the attachments referenced by desc.
 
         const FramebufferDesc& getDesc() const override { return desc; }
         const FramebufferInfoEx& getFramebufferInfo() const override { return framebufferInfo; }

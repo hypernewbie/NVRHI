@@ -542,6 +542,15 @@ namespace nvrhi::metal
         result->desc = desc;
         result->framebufferInfo = FramebufferInfoEx(desc);
 
+        // [UAA] - START - retain attachments as in the Vulkan framebuffer
+        for (const auto& attachment : desc.colorAttachments)
+            result->resources.push_back(attachment.texture);
+        if (desc.depthAttachment.valid())
+            result->resources.push_back(desc.depthAttachment.texture);
+        if (desc.shadingRateAttachment.valid())
+            result->resources.push_back(desc.shadingRateAttachment.texture);
+        // [UAA] - END
+
         return FramebufferHandle::Create(result);
     }
 
