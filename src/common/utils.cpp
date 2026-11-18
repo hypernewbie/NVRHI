@@ -172,6 +172,7 @@ namespace nvrhi::utils
         case GraphicsAPI::D3D11:  return "D3D11";
         case GraphicsAPI::D3D12:  return "D3D12";
         case GraphicsAPI::VULKAN: return "Vulkan";
+        case GraphicsAPI::METAL:  return "Metal"; // [UAA]
         default:                         return "<UNKNOWN>";
         }
     }

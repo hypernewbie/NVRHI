@@ -36,6 +36,7 @@ cmake_dependent_option(NVRHI_INSTALL_EXPORTS "Install CMake exports" OFF "NVRHI_
 
 option(NVRHI_WITH_VALIDATION "Build NVRHI the validation layer" ON)
 option(NVRHI_WITH_VULKAN "Build the NVRHI Vulkan backend" ON)
+option(NVRHI_WITH_METAL "Build the NVRHI Metal backend" OFF) # [UAA]
 option(NVRHI_WITH_RTXMU "Use RTXMU for acceleration structure management" OFF)
 option(NVRHI_WITH_AFTERMATH "Include Aftermath support (requires NSight Aftermath SDK)" OFF)
 
@@ -172,6 +173,42 @@ if(NVRHI_WITH_DX12)
     endif()
 endif()
 
+if(NVRHI_WITH_METAL) # [UAA]
+    if(NOT APPLE)
+        message(FATAL_ERROR "NVRHI Metal backend requires an Apple target")
+    endif()
+
+    option(NVRHI_FETCH_SPIRV_CROSS "Fetch SPIRV-Cross when building the Metal backend and no external target is provided" ON) # [UAA]
+    set(NVRHI_SPIRV_CROSS_GIT_REPOSITORY "https://github.com/KhronosGroup/SPIRV-Cross.git" CACHE STRING "SPIRV-Cross git repository used by NVRHI_FETCH_SPIRV_CROSS") # [UAA]
+    set(NVRHI_SPIRV_CROSS_GIT_TAG "vulkan-sdk-1.4.341.0" CACHE STRING "SPIRV-Cross git tag or commit used by NVRHI_FETCH_SPIRV_CROSS") # [UAA]
+
+    if(NOT TARGET spirv-cross-msl)
+        include(FetchContent)
+
+        message(STATUS "Fetching SPIRV-Cross from ${NVRHI_SPIRV_CROSS_GIT_REPOSITORY}, tag ${NVRHI_SPIRV_CROSS_GIT_TAG}")
+
+        set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+
+        FetchContent_Declare(
+            spirv_cross
+            GIT_REPOSITORY ${NVRHI_SPIRV_CROSS_GIT_REPOSITORY}
+            GIT_TAG ${NVRHI_SPIRV_CROSS_GIT_TAG})
+
+        FetchContent_MakeAvailable(spirv_cross)
+    endif()
+
+    if(NOT TARGET spirv-cross-msl)
+        message(FATAL_ERROR "NVRHI Metal backend requires the SPIRV-Cross MSL library (spirv-cross-msl target).")
+    endif()
+endif()
+
 if (NVRHI_WITH_RTXMU)
     get_target_property(RTXMU_VULKAN_INCLUDE_DIR ${nvrhi_vulkan_headers_target} INTERFACE_INCLUDE_DIRECTORIES)
     
@@ -279,6 +316,17 @@ set(src_d3d12
     src/d3d12/d3d12-state-tracking.cpp
     src/d3d12/d3d12-texture.cpp
     src/d3d12/d3d12-upload.cpp)
+
+set(include_metal
+    include/nvrhi/metal.h)
+set(src_metal
+    src/metal/metal-backend.h
+    src/metal/metal-spirv.h
+    src/metal/metal-spirv.cpp
+    src/metal/metal-commandlist.mm
+    src/metal/metal-constants.mm
+    src/metal/metal-device.mm
+    src/metal/metal-shader.mm)
 
 set(include_vk
     include/nvrhi/vulkan.h)
@@ -420,6 +468,37 @@ if (NVRHI_WITH_DX12)
     target_compile_definitions(${nvrhi_d3d12_target} PRIVATE NVRHI_WITH_AFTERMATH=$<BOOL:${NVRHI_WITH_AFTERMATH}>)
 endif()
 
+if (NVRHI_WITH_METAL) # [UAA]
+    if (NVRHI_BUILD_SHARED)
+        set(nvrhi_metal_target nvrhi)
+
+        target_sources(${nvrhi_metal_target} PRIVATE
+            ${include_metal}
+            ${src_metal})
+    else()
+        set(nvrhi_metal_target nvrhi_metal)
+
+        add_library(${nvrhi_metal_target} STATIC
+            ${include_metal}
+            ${src_metal})
+
+        set_target_properties(${nvrhi_metal_target} PROPERTIES FOLDER "NVRHI")
+        target_include_directories(${nvrhi_metal_target} PRIVATE include)
+    endif()
+
+    target_link_libraries(${nvrhi_metal_target} PUBLIC nvrhi)
+    target_link_libraries(${nvrhi_metal_target} PRIVATE spirv-cross-msl)
+    target_link_libraries(${nvrhi_metal_target} PUBLIC "-framework Metal" "-framework Foundation")
+
+    # The Metal backend is written in Objective-C++ with ARC.
+    set_source_files_properties(
+        src/metal/metal-commandlist.mm
+        src/metal/metal-constants.mm
+        src/metal/metal-device.mm
+        src/metal/metal-shader.mm
+        PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+endif()
+
 if (NVRHI_WITH_VULKAN)
     if (NVRHI_BUILD_SHARED)
         set(nvrhi_vulkan_target nvrhi)
@@ -458,7 +537,7 @@ endif()
 
 # NVRHI_D3D12_WITH_DXRCLUSTER selects the d3d12.h that nvrhi/d3d12.h includes, so every nvrhi
 # library and every consumer has to be compiled with the same value.
-set(_nvrhi_targets nvrhi ${nvrhi_d3d11_target} ${nvrhi_d3d12_target} ${nvrhi_vulkan_target})
+set(_nvrhi_targets nvrhi ${nvrhi_d3d11_target} ${nvrhi_d3d12_target} ${nvrhi_vulkan_target} ${nvrhi_metal_target}) # [UAA]
 list(REMOVE_DUPLICATES _nvrhi_targets)
 foreach(_nvrhi_target IN LISTS _nvrhi_targets)
     target_compile_definitions(${_nvrhi_target} PUBLIC NVRHI_D3D12_WITH_DXRCLUSTER=$<BOOL:${NVRHI_D3D12_WITH_DXRCLUSTER}>)
@@ -491,6 +570,10 @@ if (NVRHI_INSTALL)
 
         if (NVRHI_WITH_VULKAN)
             install(TARGETS ${nvrhi_vulkan_target} DESTINATION "lib" EXPORT "nvrhiTargets")
+        endif()
+
+        if (NVRHI_WITH_METAL) # [UAA]
+            install(TARGETS ${nvrhi_metal_target} DESTINATION "lib" EXPORT "nvrhiTargets")
         endif()
     endif()
 

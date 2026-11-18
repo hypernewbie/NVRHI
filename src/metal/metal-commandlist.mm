@@ -1,0 +1,1057 @@
+/*
+* Copyright (c) 2014-2021, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+
+#include "metal-backend.h"
+
+#include <nvrhi/common/misc.h>
+
+#include <algorithm>
+#include <cfloat>
+#include <vector>
+
+namespace nvrhi::metal
+{
+    namespace
+    {
+        // Metal copies between a buffer and a texture require 256 byte aligned rows.
+        constexpr uint64_t kBlitRowAlignment = 256;
+
+        uint32_t getMipSize(uint32_t size, uint32_t mipLevel)
+        {
+            return std::max(1u, size >> mipLevel);
+        }
+
+        // Writes the clear value into a buffer of the given format.
+        void fillClearData(std::vector<uint8_t>& data, uint64_t rowPitch, uint32_t pixelsPerRow, uint32_t rows, Format format, const Color& color, uint32_t intValue, bool integer)
+        {
+            const FormatInfo& info = getFormatInfo(format);
+            const uint32_t components = uint32_t( info.hasRed ) + uint32_t( info.hasGreen ) + uint32_t( info.hasBlue ) + uint32_t( info.hasAlpha );
+            if (components == 0)
+                return;
+
+            const uint32_t bytesPerComponent = info.kind == FormatKind::Float ? 4 : ( info.kind == FormatKind::Normalized ? 1 : info.bytesPerBlock / components );
+
+            float values[4] = {};
+            uint32_t valueIndex = 0;
+            if ( info.hasRed ) values[valueIndex++] = color.r;
+            if ( info.hasGreen ) values[valueIndex++] = color.g;
+            if ( info.hasBlue ) values[valueIndex++] = color.b;
+            if ( info.hasAlpha ) values[valueIndex++] = color.a;
+
+            for ( uint32_t row = 0; row < rows; ++row )
+            for ( uint32_t pixel = 0; pixel < pixelsPerRow; ++pixel )
+            {
+                uint8_t* target = data.data() + row * rowPitch + pixel * components * bytesPerComponent;
+
+                for ( uint32_t component = 0; component < components; ++component )
+                {
+                    uint8_t* componentData = target + component * bytesPerComponent;
+
+                    if ( integer )
+                    {
+                        for ( uint32_t byte = 0; byte < bytesPerComponent; ++byte )
+                            componentData[byte] = uint8_t(( intValue >> (byte * 8)) & 0xFF);
+                        continue;
+                    }
+
+                    if ( info.kind == FormatKind::Float )
+                    {
+                        const float value = values[component];
+                        memcpy(componentData, &value, 4);
+                    }
+                    else if ( info.kind == FormatKind::Normalized )
+                    {
+                        const float value = values[component];
+                        componentData[0] = uint8_t(info.isSigned
+                            ? std::max(-127.f, std::min(127.f, value * 127.f))
+                            : std::max(0.f, std::min(1.f, value)) * 255.f);
+                    }
+                    else
+                    {
+                        const uint32_t value = uint32_t(values[component]);
+                        for ( uint32_t byte = 0; byte < bytesPerComponent; ++byte )
+                            componentData[byte] = uint8_t((value >> (byte * 8)) & 0xFF);
+                    }
+                }
+            }
+        }
+    }
+
+    CommandList::CommandList(Device* device, const CommandListParameters& params)
+        : m_Device(device)
+        , m_Params(params)
+    {
+    }
+
+    CommandList::~CommandList()
+    {
+        endEncoder();
+    }
+
+    void CommandList::open()
+    {
+        endEncoder();
+        m_CurrentComputePipeline = nullptr;
+        m_CurrentGraphicsPipeline = nullptr;
+        m_CommandBuffer = [m_Device->getQueue() commandBuffer];
+        m_IsOpen = true;
+    }
+
+    void CommandList::close()
+    {
+        endEncoder();
+        m_IsOpen = false;
+    }
+
+    void CommandList::clearState()
+    {
+        m_CurrentComputePipeline = nullptr;
+        m_CurrentGraphicsPipeline = nullptr;
+    }
+
+    void CommandList::endEncoder()
+    {
+        if (m_ComputeEncoder)
+        {
+            [m_ComputeEncoder endEncoding];
+            m_ComputeEncoder = nil;
+        }
+
+        if (m_RenderEncoder)
+        {
+            [m_RenderEncoder endEncoding];
+            m_RenderEncoder = nil;
+            m_RenderEncoderFramebuffer = nullptr;
+        }
+
+        if (m_BlitEncoder)
+        {
+            [m_BlitEncoder endEncoding];
+            m_BlitEncoder = nil;
+        }
+    }
+
+    id<MTLComputeCommandEncoder> CommandList::getComputeEncoder()
+    {
+        if (!m_ComputeEncoder)
+        {
+            endEncoder();
+            m_ComputeEncoder = [m_CommandBuffer computeCommandEncoder];
+        }
+
+        return m_ComputeEncoder;
+    }
+
+    id<MTLBlitCommandEncoder> CommandList::getBlitEncoder()
+    {
+        if (!m_BlitEncoder)
+        {
+            endEncoder();
+            m_BlitEncoder = [m_CommandBuffer blitCommandEncoder];
+        }
+
+        return m_BlitEncoder;
+    }
+
+    // ------------------------------------------------------------------ Compute
+
+    void CommandList::setComputeState(const ComputeState& state)
+    {
+        ComputePipeline* pso = checked_cast<ComputePipeline*>(state.pipeline);
+        if (!pso)
+            return;
+
+        id<MTLComputeCommandEncoder> encoder = getComputeEncoder();
+        if (!encoder)
+            return;
+
+        [encoder setComputePipelineState:pso->pipeline];
+
+        m_CurrentComputePipeline = pso;
+        bindComputeResources(state);
+    }
+
+    void CommandList::bindComputeResources(const ComputeState& state)
+    {
+        id<MTLComputeCommandEncoder> encoder = getComputeEncoder();
+        if (!encoder)
+            return;
+
+        for (uint32_t i = 0; i < state.bindings.size(); ++i)
+        {
+            BindingSet* bindingSet = checked_cast<BindingSet*>(state.bindings[i]);
+            if (!bindingSet)
+                continue;
+
+            const BindingLayout* layout = checked_cast<BindingLayout*>(bindingSet->layout.Get());
+            if (!layout)
+                continue;
+
+            const ShaderType stage = layout->desc.visibility;
+
+            for (const auto& item : bindingSet->desc.bindings)
+            {
+                const PipelineBindingPlan::Entry* entry = m_CurrentComputePipeline->plan.find(stage, i, item.slot);
+                if (!entry)
+                    continue;
+
+                bindResource(entry->bound, item);
+            }
+        }
+    }
+
+    void CommandList::bindResource(const BoundResource& bound, const nvrhi::BindingSetItem& item)
+    {
+        switch (bound.kind)
+        {
+        case ResourceKind::Buffer:
+        {
+            // The resource has to match the kind the shader expects.
+            const bool isBuffer = item.type == ResourceType::ConstantBuffer || item.type == ResourceType::VolatileConstantBuffer
+                || item.type == ResourceType::StructuredBuffer_SRV || item.type == ResourceType::StructuredBuffer_UAV
+                || item.type == ResourceType::RawBuffer_SRV || item.type == ResourceType::RawBuffer_UAV;
+            if (!isBuffer)
+                return;
+
+            Buffer* buffer = checked_cast<Buffer*>(item.resourceHandle);
+            if (!buffer || !buffer->buffer)
+                return;
+
+            if (m_ComputeEncoder)
+                [m_ComputeEncoder setBuffer:buffer->buffer offset:item.range.byteOffset atIndex:bound.index];
+            break;
+        }
+        case ResourceKind::Texture:
+        {
+            // Texel buffers are buffers in NVRHI, but the Metal backend does not support them.
+            const bool isTexture = item.type == ResourceType::Texture_SRV || item.type == ResourceType::Texture_UAV;
+            if (!isTexture)
+                return;
+
+            Texture* texture = checked_cast<Texture*>(item.resourceHandle);
+            if (!texture || !texture->texture)
+                return;
+
+            if (m_ComputeEncoder)
+                [m_ComputeEncoder setTexture:texture->texture atIndex:bound.index];
+            break;
+        }
+        case ResourceKind::Sampler:
+        {
+            Sampler* sampler = checked_cast<Sampler*>(item.resourceHandle);
+            if (!sampler || !sampler->sampler)
+                return;
+
+            if (m_ComputeEncoder)
+                [m_ComputeEncoder setSamplerState:sampler->sampler atIndex:bound.index];
+            break;
+        }
+        }
+    }
+
+    void CommandList::dispatch(uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ)
+    {
+        if (!m_CurrentComputePipeline)
+            return;
+
+        id<MTLComputeCommandEncoder> encoder = getComputeEncoder();
+        if (!encoder)
+            return;
+
+        bindPushConstants(m_CurrentComputePipeline->pushConstantBufferIndex, m_CurrentComputePipeline->pushConstantSize, ShaderType::Compute);
+
+        const uint32_t* threadGroupSize = m_CurrentComputePipeline->threadGroupSize;
+        [encoder dispatchThreadgroups:MTLSizeMake(groupsX, groupsY, groupsZ)
+            threadsPerThreadgroup:MTLSizeMake(threadGroupSize[0], threadGroupSize[1], threadGroupSize[2])];
+    }
+
+    void CommandList::dispatchIndirect(uint32_t offsetBytes)
+    {
+        (void)offsetBytes;
+    }
+
+    // ------------------------------------------------------------------ Transfers
+
+    void CommandList::writeBuffer(IBuffer* b, const void* data, size_t dataSize, uint64_t destOffsetBytes)
+    {
+        Buffer* buffer = checked_cast<Buffer*>(b);
+        if (!buffer || !buffer->buffer || dataSize == 0)
+            return;
+
+        id<MTLBuffer> source = [m_Device->getContext().device newBufferWithBytes:data length:dataSize options:MTLResourceStorageModeShared];
+        if (!source)
+            return;
+
+        [getBlitEncoder() copyFromBuffer:source sourceOffset:0 toBuffer:buffer->buffer destinationOffset:destOffsetBytes size:dataSize];
+    }
+
+    void CommandList::copyBuffer(IBuffer* dest, uint64_t destOffsetBytes, IBuffer* src, uint64_t srcOffsetBytes, uint64_t dataSizeBytes)
+    {
+        Buffer* destBuffer = checked_cast<Buffer*>(dest);
+        Buffer* srcBuffer = checked_cast<Buffer*>(src);
+        if (!destBuffer || !srcBuffer || dataSizeBytes == 0)
+            return;
+
+        [getBlitEncoder() copyFromBuffer:srcBuffer->buffer sourceOffset:srcOffsetBytes toBuffer:destBuffer->buffer destinationOffset:destOffsetBytes size:dataSizeBytes];
+    }
+
+    void CommandList::clearBufferUInt(IBuffer* b, uint32_t clearValue)
+    {
+        Buffer* buffer = checked_cast<Buffer*>(b);
+        if (!buffer || !buffer->buffer)
+            return;
+
+        const uint64_t size = buffer->desc.byteSize;
+        std::vector<uint32_t> data(size / sizeof(uint32_t), clearValue);
+
+        id<MTLBuffer> source = [m_Device->getContext().device newBufferWithBytes:data.data() length:data.size() * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+        if (!source)
+            return;
+
+        [getBlitEncoder() copyFromBuffer:source sourceOffset:0 toBuffer:buffer->buffer destinationOffset:0 size:data.size() * sizeof(uint32_t)];
+    }
+
+    void CommandList::writeTexture(ITexture* dest, uint32_t arraySlice, uint32_t mipLevel, const void* data, size_t rowPitch, size_t depthPitch)
+    {
+        (void)depthPitch;
+
+        Texture* texture = checked_cast<Texture*>(dest);
+        if (!texture || !texture->texture || !data)
+            return;
+
+        const TextureDesc& desc = texture->desc;
+        const uint32_t width = getMipSize(desc.width, mipLevel);
+        const uint32_t height = getMipSize(desc.height, mipLevel);
+        const uint32_t bytesPerPixel = getFormatInfo(desc.format).bytesPerBlock;
+        if (bytesPerPixel == 0)
+            return;
+
+        const uint64_t alignedRowPitch = alignSize(rowPitch ? rowPitch : uint64_t(width) * bytesPerPixel, kBlitRowAlignment);
+        const uint64_t totalBytes = alignedRowPitch * height;
+
+        id<MTLBuffer> source = [m_Device->getContext().device newBufferWithLength:totalBytes options:MTLResourceStorageModeShared];
+        if (!source)
+            return;
+
+        uint8_t* destination = (uint8_t*)source.contents;
+        const uint8_t* sourceData = (const uint8_t*)data;
+        for (uint32_t y = 0; y < height; ++y)
+            memcpy(destination + y * alignedRowPitch, sourceData + y * rowPitch, rowPitch ? rowPitch : uint64_t(width) * bytesPerPixel);
+
+        [getBlitEncoder() copyFromBuffer:source sourceOffset:0 sourceBytesPerRow:alignedRowPitch sourceBytesPerImage:alignedRowPitch * height
+            sourceSize:MTLSizeMake(width, height, 1)
+            toTexture:texture->texture destinationSlice:arraySlice destinationLevel:mipLevel destinationOrigin:MTLOriginMake(0, 0, 0)];
+    }
+
+    void CommandList::copyTexture(ITexture* dest, const TextureSlice& destSlice, ITexture* src, const TextureSlice& srcSlice)
+    {
+        Texture* destTexture = checked_cast<Texture*>(dest);
+        Texture* srcTexture = checked_cast<Texture*>(src);
+        if (!destTexture || !srcTexture)
+            return;
+
+        const uint32_t width = srcSlice.width == uint32_t(-1) ? getMipSize(srcTexture->desc.width, srcSlice.mipLevel) : srcSlice.width;
+        const uint32_t height = srcSlice.height == uint32_t(-1) ? getMipSize(srcTexture->desc.height, srcSlice.mipLevel) : srcSlice.height;
+        const uint32_t depth = srcSlice.depth == uint32_t(-1) ? 1 : srcSlice.depth;
+
+        [getBlitEncoder() copyFromTexture:srcTexture->texture sourceSlice:srcSlice.arraySlice sourceLevel:srcSlice.mipLevel
+            sourceOrigin:MTLOriginMake(srcSlice.x, srcSlice.y, srcSlice.z) sourceSize:MTLSizeMake(width, height, depth)
+            toTexture:destTexture->texture destinationSlice:destSlice.arraySlice destinationLevel:destSlice.mipLevel
+            destinationOrigin:MTLOriginMake(destSlice.x, destSlice.y, destSlice.z)];
+    }
+
+    void CommandList::copyTexture(IStagingTexture* dest, const TextureSlice& destSlice, ITexture* src, const TextureSlice& srcSlice)
+    {
+        StagingTexture* staging = checked_cast<StagingTexture*>(dest);
+        Texture* srcTexture = checked_cast<Texture*>(src);
+        if (!staging || !srcTexture || !staging->buffer)
+            return;
+
+        const uint32_t mip = srcSlice.mipLevel;
+        if (mip >= staging->mipOffsets.size())
+            return;
+
+        const uint32_t width = getMipSize(srcTexture->desc.width, mip);
+        const uint32_t height = getMipSize(srcTexture->desc.height, mip);
+        const uint64_t rowPitch = staging->mipRowPitches[mip];
+
+        [getBlitEncoder() copyFromTexture:srcTexture->texture sourceSlice:srcSlice.arraySlice sourceLevel:mip
+            sourceOrigin:MTLOriginMake(srcSlice.x, srcSlice.y, srcSlice.z) sourceSize:MTLSizeMake(width, height, 1)
+            toBuffer:staging->buffer destinationOffset:staging->mipOffsets[mip] destinationBytesPerRow:rowPitch destinationBytesPerImage:rowPitch * height];
+    }
+
+    void CommandList::copyTexture(ITexture* dest, const TextureSlice& destSlice, IStagingTexture* src, const TextureSlice& srcSlice)
+    {
+        Texture* destTexture = checked_cast<Texture*>(dest);
+        StagingTexture* staging = checked_cast<StagingTexture*>(src);
+        if (!destTexture || !staging || !staging->buffer)
+            return;
+
+        const uint32_t mip = srcSlice.mipLevel;
+        if (mip >= staging->mipOffsets.size())
+            return;
+
+        const uint32_t width = getMipSize(destTexture->desc.width, mip);
+        const uint32_t height = getMipSize(destTexture->desc.height, mip);
+        const uint64_t rowPitch = staging->mipRowPitches[mip];
+
+        [getBlitEncoder() copyFromBuffer:staging->buffer sourceOffset:staging->mipOffsets[mip] sourceBytesPerRow:rowPitch sourceBytesPerImage:rowPitch * height
+            sourceSize:MTLSizeMake(width, height, 1)
+            toTexture:destTexture->texture destinationSlice:destSlice.arraySlice destinationLevel:mip destinationOrigin:MTLOriginMake(0, 0, 0)];
+    }
+
+    void CommandList::resolveTexture(ITexture* dest, const TextureSubresourceSet& dstSubresources, ITexture* src, const TextureSubresourceSet& srcSubresources)
+    {
+        (void)dest;
+        (void)dstSubresources;
+        (void)src;
+        (void)srcSubresources;
+    }
+
+    void CommandList::clearTextureFloat(ITexture* t, TextureSubresourceSet subresources, const Color& clearColor)
+    {
+        Texture* texture = checked_cast<Texture*>(t);
+        if (!texture)
+            return;
+
+        clearTexture(texture, subresources, clearColor, 0, false);
+    }
+
+    void CommandList::clearTextureUInt(ITexture* t, TextureSubresourceSet subresources, uint32_t clearColor)
+    {
+        Texture* texture = checked_cast<Texture*>(t);
+        if (!texture)
+            return;
+
+        clearTexture(texture, subresources, Color(), clearColor, true);
+    }
+
+    void CommandList::clearDepthStencilTexture(ITexture* t, TextureSubresourceSet subresources, bool clearDepth, float depth, bool clearStencil, uint8_t stencil)
+    {
+        (void)subresources;
+
+        Texture* texture = checked_cast<Texture*>(t);
+        if (!texture)
+            return;
+
+        // Metal clears a depth attachment through the render pass.
+        endEncoder();
+
+        MTLRenderPassDescriptor* passDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+        passDescriptor.depthAttachment.texture = texture->texture;
+        passDescriptor.depthAttachment.loadAction = clearDepth ? MTLLoadActionClear : MTLLoadActionDontCare;
+        passDescriptor.depthAttachment.storeAction = MTLStoreActionStore;
+        passDescriptor.depthAttachment.clearDepth = depth;
+
+        if (getFormatInfo(texture->desc.format).hasStencil)
+        {
+            passDescriptor.stencilAttachment.texture = texture->texture;
+            passDescriptor.stencilAttachment.loadAction = clearStencil ? MTLLoadActionClear : MTLLoadActionDontCare;
+            passDescriptor.stencilAttachment.storeAction = MTLStoreActionStore;
+            passDescriptor.stencilAttachment.clearStencil = stencil;
+        }
+
+        id<MTLRenderCommandEncoder> encoder = [m_CommandBuffer renderCommandEncoderWithDescriptor:passDescriptor];
+        [encoder endEncoding];
+    }
+
+    void CommandList::clearTexture(Texture* texture, const TextureSubresourceSet& subresources, const Color& color, uint32_t intValue, bool integer)
+    {
+        const TextureDesc& desc = texture->desc;
+        const uint32_t bytesPerPixel = getFormatInfo(desc.format).bytesPerBlock;
+        if (bytesPerPixel == 0)
+            return;
+
+        const uint32_t baseMip = subresources.baseMipLevel;
+        const uint32_t numMips = subresources.numMipLevels == uint32_t(-1) ? desc.mipLevels - baseMip : subresources.numMipLevels;
+        const uint32_t baseSlice = subresources.baseArraySlice;
+        const uint32_t numSlices = subresources.numArraySlices == uint32_t(-1) ? desc.arraySize - baseSlice : subresources.numArraySlices;
+
+        for (uint32_t mip = 0; mip < numMips; ++mip)
+        {
+            const uint32_t width = getMipSize(desc.width, baseMip + mip);
+            const uint32_t height = getMipSize(desc.height, baseMip + mip);
+            const uint64_t rowPitch = alignSize(uint64_t(width) * bytesPerPixel, kBlitRowAlignment);
+
+            std::vector<uint8_t> data(rowPitch * height);
+            fillClearData(data, rowPitch, width, height, desc.format, color, intValue, integer);
+
+            id<MTLBuffer> source = [m_Device->getContext().device newBufferWithBytes:data.data() length:data.size() options:MTLResourceStorageModeShared];
+            if (!source)
+                return;
+
+            [getBlitEncoder() copyFromBuffer:source sourceOffset:0 sourceBytesPerRow:rowPitch sourceBytesPerImage:rowPitch * height
+                sourceSize:MTLSizeMake(width, height, 1)
+                toTexture:texture->texture destinationSlice:baseSlice destinationLevel:baseMip + mip destinationOrigin:MTLOriginMake(0, 0, 0)];
+        }
+    }
+
+    // ------------------------------------------------------------------ Graphics
+
+    id<MTLRenderCommandEncoder> CommandList::getRenderEncoder(Framebuffer* framebuffer)
+    {
+        // The render pass holds the attachments, so a new framebuffer needs a new pass.
+        if (m_RenderEncoder)
+        {
+            if (m_RenderEncoderFramebuffer == framebuffer)
+                return m_RenderEncoder;
+
+            endEncoder();
+        }
+
+        endEncoder();
+
+        MTLRenderPassDescriptor* passDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+
+        for (uint32_t i = 0; i < framebuffer->desc.colorAttachments.size(); ++i)
+        {
+            const Texture* texture = checked_cast<Texture*>(framebuffer->desc.colorAttachments[i].texture);
+            if (!texture || !texture->texture)
+                continue;
+
+            passDescriptor.colorAttachments[i].texture = texture->texture;
+            passDescriptor.colorAttachments[i].loadAction = MTLLoadActionLoad;
+            passDescriptor.colorAttachments[i].storeAction = MTLStoreActionStore;
+        }
+
+        if (framebuffer->desc.depthAttachment.texture)
+        {
+            const Texture* texture = checked_cast<Texture*>(framebuffer->desc.depthAttachment.texture);
+            if (texture && texture->texture)
+            {
+                passDescriptor.depthAttachment.texture = texture->texture;
+                passDescriptor.depthAttachment.loadAction = MTLLoadActionLoad;
+                passDescriptor.depthAttachment.storeAction = MTLStoreActionStore;
+
+                // A combined depth and stencil format needs the stencil attachment as well.
+                if (getFormatInfo(texture->desc.format).hasStencil)
+                {
+                    passDescriptor.stencilAttachment.texture = texture->texture;
+                    passDescriptor.stencilAttachment.loadAction = MTLLoadActionLoad;
+                    passDescriptor.stencilAttachment.storeAction = MTLStoreActionStore;
+                }
+            }
+        }
+
+        m_RenderEncoder = [m_CommandBuffer renderCommandEncoderWithDescriptor:passDescriptor];
+        m_RenderEncoderFramebuffer = framebuffer;
+        return m_RenderEncoder;
+    }
+
+    void CommandList::setGraphicsState(const GraphicsState& state)
+    {
+        GraphicsPipeline* pso = checked_cast<GraphicsPipeline*>(state.pipeline);
+        Framebuffer* framebuffer = checked_cast<Framebuffer*>(state.framebuffer);
+        if (!pso || !framebuffer)
+            return;
+
+        id<MTLRenderCommandEncoder> encoder = getRenderEncoder(framebuffer);
+        if (!encoder)
+            return;
+
+        [encoder setRenderPipelineState:pso->pipeline];
+
+        const RasterState& rasterState = pso->desc.renderState.rasterState;
+        [encoder setCullMode:convertCullMode(rasterState.cullMode)];
+        [encoder setTriangleFillMode:rasterState.fillMode == RasterFillMode::Wireframe ? MTLTriangleFillModeLines : MTLTriangleFillModeFill];
+        [encoder setFrontFacingWinding:rasterState.frontCounterClockwise ? MTLWindingCounterClockwise : MTLWindingClockwise];
+        [encoder setDepthClipMode:rasterState.depthClipEnable ? MTLDepthClipModeClip : MTLDepthClipModeClamp];
+
+        // Metal rejects a depth state when the pass has no depth attachment.
+        if (framebuffer->desc.depthAttachment.texture)
+            [encoder setDepthStencilState:pso->depthStencilState];
+
+        [encoder setStencilReferenceValue:state.dynamicStencilRefValue];
+
+        [encoder setBlendColorRed:state.blendConstantColor.r green:state.blendConstantColor.g blue:state.blendConstantColor.b alpha:state.blendConstantColor.a];
+
+        if (rasterState.depthBias != 0 || rasterState.slopeScaledDepthBias != 0.f || rasterState.depthBiasClamp != 0.f)
+        {
+            [encoder setDepthBias:float(rasterState.depthBias) slopeScale:rasterState.slopeScaledDepthBias clamp:rasterState.depthBiasClamp];
+        }
+
+        m_IndexBuffer = state.indexBuffer;
+        m_IndirectBuffer = checked_cast<Buffer*>(state.indirectParams);
+
+        if (!state.viewport.viewports.empty())
+        {
+            const Viewport& viewport = state.viewport.viewports[0];
+            MTLViewport metalViewport;
+            metalViewport.originX = viewport.minX;
+            metalViewport.originY = viewport.minY;
+            metalViewport.width = viewport.maxX - viewport.minX;
+            metalViewport.height = viewport.maxY - viewport.minY;
+            metalViewport.znear = viewport.minZ;
+            metalViewport.zfar = viewport.maxZ;
+            [encoder setViewport:metalViewport];
+        }
+
+        if (!state.viewport.scissorRects.empty())
+        {
+            const Rect& rect = state.viewport.scissorRects[0];
+            MTLScissorRect scissorRect;
+            scissorRect.x = rect.minX;
+            scissorRect.y = rect.minY;
+            scissorRect.width = rect.maxX - rect.minX;
+            scissorRect.height = rect.maxY - rect.minY;
+            [encoder setScissorRect:scissorRect];
+        }
+
+        for (const auto& vertexBuffer : state.vertexBuffers)
+        {
+            const Buffer* buffer = checked_cast<Buffer*>(vertexBuffer.buffer);
+            if (!buffer || !buffer->buffer)
+                continue;
+
+            [encoder setVertexBuffer:buffer->buffer offset:vertexBuffer.offset atIndex:vertexBuffer.slot];
+        }
+
+        m_CurrentGraphicsPipeline = pso;
+        bindGraphicsResources(state);
+    }
+
+    void CommandList::bindGraphicsResources(const GraphicsState& state)
+    {
+        for (uint32_t i = 0; i < state.bindings.size(); ++i)
+        {
+            const BindingSet* bindingSet = checked_cast<BindingSet*>(state.bindings[i]);
+            if (!bindingSet)
+                continue;
+
+            const BindingLayout* layout = checked_cast<BindingLayout*>(bindingSet->layout.Get());
+            if (!layout)
+                continue;
+
+            const ShaderType stage = layout->desc.visibility;
+
+            for (const auto& item : bindingSet->desc.bindings)
+            {
+                const PipelineBindingPlan::Entry* entry = m_CurrentGraphicsPipeline->plan.find(stage, i, item.slot);
+                if (!entry)
+                    continue;
+
+                bindGraphicsResource(entry->bound, item, stage == ShaderType::Vertex);
+            }
+        }
+    }
+
+    void CommandList::bindGraphicsResource(const BoundResource& bound, const nvrhi::BindingSetItem& item, bool vertexStage)
+    {
+        if (!m_RenderEncoder)
+            return;
+
+        switch (bound.kind)
+        {
+        case ResourceKind::Buffer:
+        {
+            const bool isBuffer = item.type == ResourceType::ConstantBuffer || item.type == ResourceType::VolatileConstantBuffer
+                || item.type == ResourceType::StructuredBuffer_SRV || item.type == ResourceType::StructuredBuffer_UAV
+                || item.type == ResourceType::RawBuffer_SRV || item.type == ResourceType::RawBuffer_UAV;
+            if (!isBuffer)
+                return;
+
+            const Buffer* buffer = checked_cast<Buffer*>(item.resourceHandle);
+            if (!buffer || !buffer->buffer)
+                return;
+
+            if (vertexStage)
+                [m_RenderEncoder setVertexBuffer:buffer->buffer offset:item.range.byteOffset atIndex:bound.index];
+            else
+                [m_RenderEncoder setFragmentBuffer:buffer->buffer offset:item.range.byteOffset atIndex:bound.index];
+            break;
+        }
+        case ResourceKind::Texture:
+        {
+            const bool isTexture = item.type == ResourceType::Texture_SRV || item.type == ResourceType::Texture_UAV;
+            if (!isTexture)
+                return;
+
+            const Texture* texture = checked_cast<Texture*>(item.resourceHandle);
+            if (!texture || !texture->texture)
+                return;
+
+            if (vertexStage)
+                [m_RenderEncoder setVertexTexture:texture->texture atIndex:bound.index];
+            else
+                [m_RenderEncoder setFragmentTexture:texture->texture atIndex:bound.index];
+            break;
+        }
+        case ResourceKind::Sampler:
+        {
+            const Sampler* sampler = checked_cast<Sampler*>(item.resourceHandle);
+            if (!sampler || !sampler->sampler)
+                return;
+
+            if (vertexStage)
+                [m_RenderEncoder setVertexSamplerState:sampler->sampler atIndex:bound.index];
+            else
+                [m_RenderEncoder setFragmentSamplerState:sampler->sampler atIndex:bound.index];
+            break;
+        }
+        }
+    }
+
+    void CommandList::draw(const DrawArguments& args)
+    {
+        if (!m_RenderEncoder || !m_CurrentGraphicsPipeline)
+            return;
+
+        if (m_CurrentGraphicsPipeline->vertexPushConstants)
+            bindPushConstants(m_CurrentGraphicsPipeline->pushConstantBufferIndex, m_CurrentGraphicsPipeline->pushConstantSize, ShaderType::Vertex);
+        if (m_CurrentGraphicsPipeline->pixelPushConstants)
+            bindPushConstants(m_CurrentGraphicsPipeline->pushConstantBufferIndex, m_CurrentGraphicsPipeline->pushConstantSize, ShaderType::Pixel);
+
+        [m_RenderEncoder drawPrimitives:m_CurrentGraphicsPipeline->primitiveType
+            vertexStart:args.startVertexLocation vertexCount:args.vertexCount instanceCount:args.instanceCount];
+    }
+
+    void CommandList::drawIndexed(const DrawArguments& args)
+    {
+        if (!m_RenderEncoder || !m_CurrentGraphicsPipeline)
+            return;
+
+        if (m_CurrentGraphicsPipeline->vertexPushConstants)
+            bindPushConstants(m_CurrentGraphicsPipeline->pushConstantBufferIndex, m_CurrentGraphicsPipeline->pushConstantSize, ShaderType::Vertex);
+        if (m_CurrentGraphicsPipeline->pixelPushConstants)
+            bindPushConstants(m_CurrentGraphicsPipeline->pushConstantBufferIndex, m_CurrentGraphicsPipeline->pushConstantSize, ShaderType::Pixel);
+
+        const Buffer* indexBuffer = checked_cast<Buffer*>(m_IndexBuffer.buffer);
+        if (!indexBuffer || !indexBuffer->buffer)
+            return;
+
+        const MTLIndexType indexType = m_IndexBuffer.format == Format::R32_UINT ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
+
+        [m_RenderEncoder drawIndexedPrimitives:m_CurrentGraphicsPipeline->primitiveType
+            indexCount:args.vertexCount indexType:indexType indexBuffer:indexBuffer->buffer indexBufferOffset:m_IndexBuffer.offset
+            instanceCount:args.instanceCount baseVertex:args.startVertexLocation baseInstance:args.startInstanceLocation];
+    }
+
+    void CommandList::drawIndirect(uint32_t offsetBytes, uint32_t drawCount)
+    {
+        if (!m_RenderEncoder || !m_CurrentGraphicsPipeline || !m_IndirectBuffer)
+            return;
+
+        for (uint32_t draw = 0; draw < drawCount; ++draw)
+        {
+            [m_RenderEncoder drawPrimitives:m_CurrentGraphicsPipeline->primitiveType
+                indirectBuffer:m_IndirectBuffer->buffer indirectBufferOffset:offsetBytes + draw * 16];
+        }
+    }
+
+    void CommandList::drawIndexedIndirect(uint32_t offsetBytes, uint32_t drawCount)
+    {
+        if (!m_RenderEncoder || !m_CurrentGraphicsPipeline || !m_IndexBuffer.buffer || !m_IndirectBuffer)
+            return;
+
+        const Buffer* indexBuffer = checked_cast<Buffer*>(m_IndexBuffer.buffer);
+        const MTLIndexType indexType = m_IndexBuffer.format == Format::R32_UINT ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
+
+        for (uint32_t draw = 0; draw < drawCount; ++draw)
+        {
+            [m_RenderEncoder drawIndexedPrimitives:m_CurrentGraphicsPipeline->primitiveType
+                indexType:indexType indexBuffer:indexBuffer->buffer indexBufferOffset:m_IndexBuffer.offset
+                indirectBuffer:m_IndirectBuffer->buffer indirectBufferOffset:offsetBytes + draw * 20];
+        }
+    }
+
+    void CommandList::drawIndexedIndirectCount(uint32_t paramOffsetBytes, uint32_t countOffsetBytes, uint32_t maxDrawCount)
+    {
+        (void)paramOffsetBytes;
+        (void)countOffsetBytes;
+        (void)maxDrawCount;
+    }
+
+    void CommandList::setPushConstants(const void* data, size_t byteSize)
+    {
+        const uint8_t* bytes = (const uint8_t*)data;
+        m_PushConstants.assign(bytes, bytes + byteSize);
+    }
+
+    void CommandList::bindPushConstants(uint32_t bufferIndex, uint32_t size, ShaderType stage)
+    {
+        if (bufferIndex == UINT32_MAX || size == 0)
+            return;
+
+        if (!m_PushConstantBuffer || m_PushConstantBuffer.length < size)
+        {
+            m_PushConstantBuffer = [m_Device->getContext().device newBufferWithLength:size options:MTLResourceStorageModeShared];
+            if (!m_PushConstantBuffer)
+                return;
+
+            memset(m_PushConstantBuffer.contents, 0, size);
+        }
+
+        memcpy(m_PushConstantBuffer.contents, m_PushConstants.data(), std::min(size, uint32_t(m_PushConstants.size())));
+
+        if (stage == ShaderType::Compute)
+        {
+            if (m_ComputeEncoder)
+                [m_ComputeEncoder setBuffer:m_PushConstantBuffer offset:0 atIndex:bufferIndex];
+        }
+        else if (stage == ShaderType::Vertex)
+        {
+            if (m_RenderEncoder)
+                [m_RenderEncoder setVertexBuffer:m_PushConstantBuffer offset:0 atIndex:bufferIndex];
+        }
+        else
+        {
+            if (m_RenderEncoder)
+                [m_RenderEncoder setFragmentBuffer:m_PushConstantBuffer offset:0 atIndex:bufferIndex];
+        }
+    }
+
+    // ------------------------------------------------------------------ Unimplemented
+
+    void CommandList::clearSamplerFeedbackTexture(ISamplerFeedbackTexture* texture)
+    {
+        (void)texture;
+    }
+
+    void CommandList::decodeSamplerFeedbackTexture(IBuffer* buffer, ISamplerFeedbackTexture* texture, nvrhi::Format format)
+    {
+        (void)buffer;
+        (void)texture;
+        (void)format;
+    }
+
+    void CommandList::setSamplerFeedbackTextureState(ISamplerFeedbackTexture* texture, ResourceStates stateBits)
+    {
+        (void)texture;
+        (void)stateBits;
+    }
+
+    void CommandList::setMeshletState(const MeshletState& state)
+    {
+        (void)state;
+    }
+
+    void CommandList::dispatchMesh(uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ)
+    {
+        (void)groupsX;
+        (void)groupsY;
+        (void)groupsZ;
+    }
+
+    void CommandList::dispatchMeshIndirect(uint32_t offsetBytes, uint32_t maxDrawCount)
+    {
+        (void)offsetBytes;
+        (void)maxDrawCount;
+    }
+
+    void CommandList::dispatchMeshIndirectCount(uint32_t paramOffsetBytes, uint32_t countOffsetBytes, uint32_t maxDrawCount)
+    {
+        (void)paramOffsetBytes;
+        (void)countOffsetBytes;
+        (void)maxDrawCount;
+    }
+
+    void CommandList::setRayTracingState(const rt::State& state)
+    {
+        (void)state;
+    }
+
+    void CommandList::dispatchRays(const rt::DispatchRaysArguments& args)
+    {
+        (void)args;
+    }
+
+    void CommandList::buildOpacityMicromap(rt::IOpacityMicromap* omm, const rt::OpacityMicromapDesc& desc)
+    {
+        (void)omm;
+        (void)desc;
+    }
+
+    void CommandList::buildBottomLevelAccelStruct(rt::IAccelStruct* as, const rt::GeometryDesc* pGeometries, size_t numGeometries, rt::AccelStructBuildFlags buildFlags)
+    {
+        (void)as;
+        (void)pGeometries;
+        (void)numGeometries;
+        (void)buildFlags;
+    }
+
+    void CommandList::compactBottomLevelAccelStructs()
+    {
+    }
+
+    void CommandList::copyRaytracingAccelerationStructure(rt::IAccelStruct* destination, rt::IAccelStruct* source)
+    {
+        (void)destination;
+        (void)source;
+    }
+
+    void CommandList::buildTopLevelAccelStruct(rt::IAccelStruct* as, const rt::InstanceDesc* pInstances, size_t numInstances, rt::AccelStructBuildFlags buildFlags)
+    {
+        (void)as;
+        (void)pInstances;
+        (void)numInstances;
+        (void)buildFlags;
+    }
+
+    void CommandList::executeMultiIndirectClusterOperation(const rt::cluster::OperationDesc& desc)
+    {
+        (void)desc;
+    }
+
+    void CommandList::buildTopLevelAccelStructFromBuffer(rt::IAccelStruct* as, nvrhi::IBuffer* instanceBuffer, uint64_t instanceBufferOffset, size_t numInstances, rt::AccelStructBuildFlags buildFlags)
+    {
+        (void)as;
+        (void)instanceBuffer;
+        (void)instanceBufferOffset;
+        (void)numInstances;
+        (void)buildFlags;
+    }
+
+    void CommandList::convertCoopVecMatrices(coopvec::ConvertMatrixLayoutDesc const* convertDescs, size_t numDescs)
+    {
+        (void)convertDescs;
+        (void)numDescs;
+    }
+
+    void CommandList::beginTimerQuery(ITimerQuery* query)
+    {
+        (void)query;
+    }
+
+    void CommandList::endTimerQuery(ITimerQuery* query)
+    {
+        (void)query;
+    }
+
+    void CommandList::beginMarker(const char* name)
+    {
+        (void)name;
+    }
+
+    void CommandList::endMarker()
+    {
+    }
+
+    // Metal tracks the hazards on its own, so the state tracking calls only keep the
+    // bookkeeping that the validation layer and the callers expect to see.
+
+    void CommandList::setEnableAutomaticBarriers(bool enable)
+    {
+        (void)enable;
+    }
+
+    void CommandList::setResourceStatesForBindingSet(IBindingSet* bindingSet)
+    {
+        (void)bindingSet;
+    }
+
+    void CommandList::setEnableUavBarriersForTexture(ITexture* texture, bool enableBarriers)
+    {
+        (void)texture;
+        (void)enableBarriers;
+    }
+
+    void CommandList::setEnableUavBarriersForBuffer(IBuffer* buffer, bool enableBarriers)
+    {
+        (void)buffer;
+        (void)enableBarriers;
+    }
+
+    void CommandList::beginTrackingTextureState(ITexture* texture, TextureSubresourceSet subresources, ResourceStates stateBits)
+    {
+        (void)texture;
+        (void)subresources;
+        (void)stateBits;
+    }
+
+    void CommandList::beginTrackingBufferState(IBuffer* buffer, ResourceStates stateBits)
+    {
+        (void)buffer;
+        (void)stateBits;
+    }
+
+    void CommandList::setTextureState(ITexture* texture, TextureSubresourceSet subresources, ResourceStates stateBits)
+    {
+        (void)texture;
+        (void)subresources;
+        (void)stateBits;
+    }
+
+    void CommandList::setBufferState(IBuffer* buffer, ResourceStates stateBits)
+    {
+        (void)buffer;
+        (void)stateBits;
+    }
+
+    void CommandList::setAccelStructState(rt::IAccelStruct* as, ResourceStates stateBits)
+    {
+        (void)as;
+        (void)stateBits;
+    }
+
+    void CommandList::setPermanentTextureState(ITexture* texture, ResourceStates stateBits)
+    {
+        (void)texture;
+        (void)stateBits;
+    }
+
+    void CommandList::setPermanentBufferState(IBuffer* buffer, ResourceStates stateBits)
+    {
+        (void)buffer;
+        (void)stateBits;
+    }
+
+    void CommandList::commitBarriers()
+    {
+    }
+
+    ResourceStates CommandList::getTextureSubresourceState(ITexture* texture, ArraySlice arraySlice, MipLevel mipLevel)
+    {
+        (void)texture;
+        (void)arraySlice;
+        (void)mipLevel;
+        return ResourceStates::Unknown;
+    }
+
+    ResourceStates CommandList::getBufferState(IBuffer* buffer)
+    {
+        (void)buffer;
+        return ResourceStates::Unknown;
+    }
+
+    IDevice* CommandList::getDevice()
+    {
+        return m_Device;
+    }
+
+    const CommandListParameters& CommandList::getDesc()
+    {
+        return m_Params;
+    }
+
+    CommandListMemoryUsage CommandList::getInternalMemoryUsage() const
+    {
+        return {};
+    }
+
+    Object CommandList::getNativeObject(ObjectType objectType)
+    {
+        if (objectType == ObjectTypes::Metal_CommandBuffer)
+            return Object((__bridge void*)m_CommandBuffer);
+
+        return nullptr;
+    }
+}
