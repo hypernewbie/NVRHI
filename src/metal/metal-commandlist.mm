@@ -156,6 +156,13 @@ namespace nvrhi::metal
         {
             endEncoder();
             m_ComputeEncoder = [m_CommandBuffer computeCommandEncoder];
+
+            // A new encoder starts with no state, so the current compute state is re-applied.
+            if (m_ComputeEncoder && m_CurrentComputePipeline)
+            {
+                [m_ComputeEncoder setComputePipelineState:m_CurrentComputePipeline->pipeline];
+                bindComputeResources(m_CurrentComputeState);
+            }
         }
 
         return m_ComputeEncoder;
@@ -180,13 +187,16 @@ namespace nvrhi::metal
         if (!pso)
             return;
 
+        m_CurrentComputeState = state;
+        m_CurrentComputePipeline = pso;
+        m_IndirectBuffer = checked_cast<Buffer*>(state.indirectParams);
+
         id<MTLComputeCommandEncoder> encoder = getComputeEncoder();
         if (!encoder)
             return;
 
         [encoder setComputePipelineState:pso->pipeline];
 
-        m_CurrentComputePipeline = pso;
         bindComputeResources(state);
     }
 
@@ -242,7 +252,19 @@ namespace nvrhi::metal
         }
         case ResourceKind::Texture:
         {
-            // Texel buffers are buffers in NVRHI, but the Metal backend does not support them.
+            // A typed buffer is a texture in the shader but a buffer in NVRHI.
+            if (item.type == ResourceType::TypedBuffer_SRV || item.type == ResourceType::TypedBuffer_UAV)
+            {
+                Buffer* buffer = checked_cast<Buffer*>(item.resourceHandle);
+                if (!buffer || !buffer->buffer)
+                    return;
+
+                id<MTLTexture> view = getTypedBufferView(m_Device->getContext(), buffer, item.format, item.range.byteOffset, item.range.byteSize);
+                if (m_ComputeEncoder && view)
+                    [m_ComputeEncoder setTexture:view atIndex:bound.index];
+                break;
+            }
+
             const bool isTexture = item.type == ResourceType::Texture_SRV || item.type == ResourceType::Texture_UAV;
             if (!isTexture)
                 return;
@@ -251,8 +273,10 @@ namespace nvrhi::metal
             if (!texture || !texture->texture)
                 return;
 
-            if (m_ComputeEncoder)
-                [m_ComputeEncoder setTexture:texture->texture atIndex:bound.index];
+            const ComponentMapping componentMapping = resolveComponentMapping(item.overrideComponentMapping, texture->desc.defaultComponentMapping);
+            id<MTLTexture> view = texture->getSubresourceView(item.subresources, item.dimension, item.format, componentMapping);
+            if (m_ComputeEncoder && view)
+                [m_ComputeEncoder setTexture:view atIndex:bound.index];
             break;
         }
         case ResourceKind::Sampler:
@@ -286,7 +310,21 @@ namespace nvrhi::metal
 
     void CommandList::dispatchIndirect(uint32_t offsetBytes)
     {
-        (void)offsetBytes;
+        if (!m_CurrentComputePipeline || !m_IndirectBuffer)
+            return;
+
+        id<MTLComputeCommandEncoder> encoder = getComputeEncoder();
+        if (!encoder)
+            return;
+
+        bindPushConstants(m_CurrentComputePipeline->pushConstantBufferIndex, m_CurrentComputePipeline->pushConstantSize, ShaderType::Compute);
+
+        // The indirect buffer holds the same three group counts for Metal as for the other
+        // backends; the thread group size comes from the pipeline like threadsPerThreadgroup.
+        const uint32_t* threadGroupSize = m_CurrentComputePipeline->threadGroupSize;
+        [encoder dispatchThreadgroupsWithIndirectBuffer:m_IndirectBuffer->buffer
+            indirectBufferOffset:offsetBytes
+            threadsPerThreadgroup:MTLSizeMake(threadGroupSize[0], threadGroupSize[1], threadGroupSize[2])];
     }
 
     // ------------------------------------------------------------------ Transfers
@@ -332,8 +370,6 @@ namespace nvrhi::metal
 
     void CommandList::writeTexture(ITexture* dest, uint32_t arraySlice, uint32_t mipLevel, const void* data, size_t rowPitch, size_t depthPitch)
     {
-        (void)depthPitch;
-
         Texture* texture = checked_cast<Texture*>(dest);
         if (!texture || !texture->texture || !data)
             return;
@@ -341,24 +377,28 @@ namespace nvrhi::metal
         const TextureDesc& desc = texture->desc;
         const uint32_t width = getMipSize(desc.width, mipLevel);
         const uint32_t height = getMipSize(desc.height, mipLevel);
+        const uint32_t depth = desc.dimension == TextureDimension::Texture3D ? getMipSize(desc.depth, mipLevel) : 1;
         const uint32_t bytesPerPixel = getFormatInfo(desc.format).bytesPerBlock;
         if (bytesPerPixel == 0)
             return;
 
-        const uint64_t alignedRowPitch = alignSize(rowPitch ? rowPitch : uint64_t(width) * bytesPerPixel, kBlitRowAlignment);
-        const uint64_t totalBytes = alignedRowPitch * height;
+        const uint64_t sourceRowPitch = rowPitch ? rowPitch : uint64_t(width) * bytesPerPixel;
+        const uint64_t sourceDepthPitch = depthPitch ? depthPitch : sourceRowPitch * height;
+        const uint64_t alignedRowPitch = alignSize(sourceRowPitch, kBlitRowAlignment);
+        const uint64_t alignedDepthPitch = alignedRowPitch * height;
 
-        id<MTLBuffer> source = [m_Device->getContext().device newBufferWithLength:totalBytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> source = [m_Device->getContext().device newBufferWithLength:alignedDepthPitch * depth options:MTLResourceStorageModeShared];
         if (!source)
             return;
 
         uint8_t* destination = (uint8_t*)source.contents;
         const uint8_t* sourceData = (const uint8_t*)data;
-        for (uint32_t y = 0; y < height; ++y)
-            memcpy(destination + y * alignedRowPitch, sourceData + y * rowPitch, rowPitch ? rowPitch : uint64_t(width) * bytesPerPixel);
+        for (uint32_t z = 0; z < depth; ++z)
+            for (uint32_t y = 0; y < height; ++y)
+                memcpy(destination + z * alignedDepthPitch + y * alignedRowPitch, sourceData + z * sourceDepthPitch + y * sourceRowPitch, sourceRowPitch);
 
-        [getBlitEncoder() copyFromBuffer:source sourceOffset:0 sourceBytesPerRow:alignedRowPitch sourceBytesPerImage:alignedRowPitch * height
-            sourceSize:MTLSizeMake(width, height, 1)
+        [getBlitEncoder() copyFromBuffer:source sourceOffset:0 sourceBytesPerRow:alignedRowPitch sourceBytesPerImage:alignedDepthPitch
+            sourceSize:MTLSizeMake(width, height, depth)
             toTexture:texture->texture destinationSlice:arraySlice destinationLevel:mipLevel destinationOrigin:MTLOriginMake(0, 0, 0)];
     }
 
@@ -421,10 +461,55 @@ namespace nvrhi::metal
 
     void CommandList::resolveTexture(ITexture* dest, const TextureSubresourceSet& dstSubresources, ITexture* src, const TextureSubresourceSet& srcSubresources)
     {
-        (void)dest;
-        (void)dstSubresources;
-        (void)src;
-        (void)srcSubresources;
+        Texture* destTexture = checked_cast<Texture*>(dest);
+        Texture* srcTexture = checked_cast<Texture*>(src);
+        if (!destTexture || !srcTexture)
+            return;
+
+        // Metal resolves through the render pass, one pass per subresource.
+        const TextureSubresourceSet resolved = srcSubresources.resolve(srcTexture->desc, true);
+        for (uint32_t mip = 0; mip < resolved.numMipLevels; ++mip)
+        {
+            for (uint32_t slice = 0; slice < resolved.numArraySlices; ++slice)
+            {
+                endEncoder();
+
+                MTLRenderPassDescriptor* passDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+
+                const bool isDepth = getFormatInfo(srcTexture->desc.format).kind == FormatKind::DepthStencil;
+                MTLRenderPassAttachmentDescriptor* attachment = isDepth ? (MTLRenderPassAttachmentDescriptor*)passDescriptor.depthAttachment
+                    : (MTLRenderPassAttachmentDescriptor*)passDescriptor.colorAttachments[0];
+                attachment.texture = srcTexture->texture;
+                attachment.level = resolved.baseMipLevel + mip;
+                attachment.slice = resolved.baseArraySlice + slice;
+                attachment.loadAction = MTLLoadActionLoad;
+                attachment.storeAction = MTLStoreActionMultisampleResolve;
+                attachment.resolveTexture = destTexture->texture;
+                attachment.resolveLevel = dstSubresources.baseMipLevel + mip;
+                attachment.resolveSlice = dstSubresources.baseArraySlice + slice;
+
+                if (isDepth)
+                {
+                    passDescriptor.depthAttachment.depthResolveFilter = MTLMultisampleDepthResolveFilterSample0;
+
+                    if (getFormatInfo(srcTexture->desc.format).hasStencil)
+                    {
+                        passDescriptor.stencilAttachment.texture = srcTexture->texture;
+                        passDescriptor.stencilAttachment.level = resolved.baseMipLevel + mip;
+                        passDescriptor.stencilAttachment.slice = resolved.baseArraySlice + slice;
+                        passDescriptor.stencilAttachment.loadAction = MTLLoadActionLoad;
+                        passDescriptor.stencilAttachment.storeAction = MTLStoreActionMultisampleResolve;
+                        passDescriptor.stencilAttachment.resolveTexture = destTexture->texture;
+                        passDescriptor.stencilAttachment.resolveLevel = dstSubresources.baseMipLevel + mip;
+                        passDescriptor.stencilAttachment.resolveSlice = dstSubresources.baseArraySlice + slice;
+                        passDescriptor.stencilAttachment.stencilResolveFilter = MTLMultisampleStencilResolveFilterSample0;
+                    }
+                }
+
+                id<MTLRenderCommandEncoder> encoder = [m_CommandBuffer renderCommandEncoderWithDescriptor:passDescriptor];
+                [encoder endEncoding];
+            }
+        }
     }
 
     void CommandList::clearTextureFloat(ITexture* t, TextureSubresourceSet subresources, const Color& clearColor)
@@ -490,18 +575,26 @@ namespace nvrhi::metal
         {
             const uint32_t width = getMipSize(desc.width, baseMip + mip);
             const uint32_t height = getMipSize(desc.height, baseMip + mip);
+            const uint32_t depth = desc.dimension == TextureDimension::Texture3D ? getMipSize(desc.depth, baseMip + mip) : 1;
             const uint64_t rowPitch = alignSize(uint64_t(width) * bytesPerPixel, kBlitRowAlignment);
 
+            // The clear pattern is identical for every depth plane and every array slice.
             std::vector<uint8_t> data(rowPitch * height);
             fillClearData(data, rowPitch, width, height, desc.format, color, intValue, integer);
+            data.resize(rowPitch * height * depth, 0);
+            for (uint32_t z = 1; z < depth; ++z)
+                memcpy(data.data() + z * rowPitch * height, data.data(), rowPitch * height);
 
             id<MTLBuffer> source = [m_Device->getContext().device newBufferWithBytes:data.data() length:data.size() options:MTLResourceStorageModeShared];
             if (!source)
                 return;
 
-            [getBlitEncoder() copyFromBuffer:source sourceOffset:0 sourceBytesPerRow:rowPitch sourceBytesPerImage:rowPitch * height
-                sourceSize:MTLSizeMake(width, height, 1)
-                toTexture:texture->texture destinationSlice:baseSlice destinationLevel:baseMip + mip destinationOrigin:MTLOriginMake(0, 0, 0)];
+            for (uint32_t slice = 0; slice < numSlices; ++slice)
+            {
+                [getBlitEncoder() copyFromBuffer:source sourceOffset:0 sourceBytesPerRow:rowPitch sourceBytesPerImage:rowPitch * height
+                    sourceSize:MTLSizeMake(width, height, depth)
+                    toTexture:texture->texture destinationSlice:baseSlice + slice destinationLevel:baseMip + mip destinationOrigin:MTLOriginMake(0, 0, 0)];
+            }
         }
     }
 
@@ -524,23 +617,35 @@ namespace nvrhi::metal
 
         for (uint32_t i = 0; i < framebuffer->desc.colorAttachments.size(); ++i)
         {
-            const Texture* texture = checked_cast<Texture*>(framebuffer->desc.colorAttachments[i].texture);
+            const FramebufferAttachment& attachment = framebuffer->desc.colorAttachments[i];
+            const Texture* texture = checked_cast<Texture*>(attachment.texture);
             if (!texture || !texture->texture)
                 continue;
 
-            passDescriptor.colorAttachments[i].texture = texture->texture;
-            passDescriptor.colorAttachments[i].loadAction = MTLLoadActionLoad;
-            passDescriptor.colorAttachments[i].storeAction = MTLStoreActionStore;
+            MTLRenderPassColorAttachmentDescriptor* colorAttachment = passDescriptor.colorAttachments[i];
+            colorAttachment.texture = texture->texture;
+            colorAttachment.loadAction = MTLLoadActionLoad;
+            colorAttachment.storeAction = MTLStoreActionStore;
+
+            // The attachment selects its mip, array slice or depth plane from the framebuffer.
+            colorAttachment.level = attachment.subresources.baseMipLevel;
+            if (texture->desc.dimension == TextureDimension::Texture3D)
+                colorAttachment.depthPlane = attachment.subresources.baseArraySlice;
+            else
+                colorAttachment.slice = attachment.subresources.baseArraySlice;
         }
 
         if (framebuffer->desc.depthAttachment.texture)
         {
-            const Texture* texture = checked_cast<Texture*>(framebuffer->desc.depthAttachment.texture);
+            const FramebufferAttachment& attachment = framebuffer->desc.depthAttachment;
+            const Texture* texture = checked_cast<Texture*>(attachment.texture);
             if (texture && texture->texture)
             {
                 passDescriptor.depthAttachment.texture = texture->texture;
                 passDescriptor.depthAttachment.loadAction = MTLLoadActionLoad;
                 passDescriptor.depthAttachment.storeAction = MTLStoreActionStore;
+                passDescriptor.depthAttachment.level = attachment.subresources.baseMipLevel;
+                passDescriptor.depthAttachment.slice = attachment.subresources.baseArraySlice;
 
                 // A combined depth and stencil format needs the stencil attachment as well.
                 if (getFormatInfo(texture->desc.format).hasStencil)
@@ -548,6 +653,8 @@ namespace nvrhi::metal
                     passDescriptor.stencilAttachment.texture = texture->texture;
                     passDescriptor.stencilAttachment.loadAction = MTLLoadActionLoad;
                     passDescriptor.stencilAttachment.storeAction = MTLStoreActionStore;
+                    passDescriptor.stencilAttachment.level = attachment.subresources.baseMipLevel;
+                    passDescriptor.stencilAttachment.slice = attachment.subresources.baseArraySlice;
                 }
             }
         }
@@ -563,6 +670,8 @@ namespace nvrhi::metal
         Framebuffer* framebuffer = checked_cast<Framebuffer*>(state.framebuffer);
         if (!pso || !framebuffer)
             return;
+
+        m_CurrentGraphicsState = state;
 
         id<MTLRenderCommandEncoder> encoder = getRenderEncoder(framebuffer);
         if (!encoder)
@@ -622,7 +731,7 @@ namespace nvrhi::metal
             if (!buffer || !buffer->buffer)
                 continue;
 
-            [encoder setVertexBuffer:buffer->buffer offset:vertexBuffer.offset atIndex:vertexBuffer.slot];
+            [encoder setVertexBuffer:buffer->buffer offset:vertexBuffer.offset atIndex:c_VertexBufferBase + vertexBuffer.slot];
         }
 
         m_CurrentGraphicsPipeline = pso;
@@ -681,18 +790,41 @@ namespace nvrhi::metal
         }
         case ResourceKind::Texture:
         {
+            // A typed buffer is a texture in the shader but a buffer in NVRHI.
+            if (item.type == ResourceType::TypedBuffer_SRV || item.type == ResourceType::TypedBuffer_UAV)
+            {
+                Buffer* buffer = checked_cast<Buffer*>(item.resourceHandle);
+                if (!buffer || !buffer->buffer)
+                    return;
+
+                id<MTLTexture> view = getTypedBufferView(m_Device->getContext(), buffer, item.format, item.range.byteOffset, item.range.byteSize);
+                if (view)
+                {
+                    if (vertexStage)
+                        [m_RenderEncoder setVertexTexture:view atIndex:bound.index];
+                    else
+                        [m_RenderEncoder setFragmentTexture:view atIndex:bound.index];
+                }
+                break;
+            }
+
             const bool isTexture = item.type == ResourceType::Texture_SRV || item.type == ResourceType::Texture_UAV;
             if (!isTexture)
                 return;
 
-            const Texture* texture = checked_cast<Texture*>(item.resourceHandle);
+            Texture* texture = checked_cast<Texture*>(item.resourceHandle);
             if (!texture || !texture->texture)
                 return;
 
-            if (vertexStage)
-                [m_RenderEncoder setVertexTexture:texture->texture atIndex:bound.index];
-            else
-                [m_RenderEncoder setFragmentTexture:texture->texture atIndex:bound.index];
+            const ComponentMapping componentMapping = resolveComponentMapping(item.overrideComponentMapping, texture->desc.defaultComponentMapping);
+            id<MTLTexture> view = texture->getSubresourceView(item.subresources, item.dimension, item.format, componentMapping);
+            if (view)
+            {
+                if (vertexStage)
+                    [m_RenderEncoder setVertexTexture:view atIndex:bound.index];
+                else
+                    [m_RenderEncoder setFragmentTexture:view atIndex:bound.index];
+            }
             break;
         }
         case ResourceKind::Sampler:
@@ -710,9 +842,21 @@ namespace nvrhi::metal
         }
     }
 
+    bool CommandList::reopenRenderEncoder()
+    {
+        if (!m_RenderEncoderFramebuffer)
+            return false;
+
+        setGraphicsState(m_CurrentGraphicsState);
+        return m_RenderEncoder != nil;
+    }
+
     void CommandList::draw(const DrawArguments& args)
     {
-        if (!m_RenderEncoder || !m_CurrentGraphicsPipeline)
+        if (!m_CurrentGraphicsPipeline)
+            return;
+
+        if (!m_RenderEncoder && !reopenRenderEncoder())
             return;
 
         if (m_CurrentGraphicsPipeline->vertexPushConstants)
@@ -726,7 +870,10 @@ namespace nvrhi::metal
 
     void CommandList::drawIndexed(const DrawArguments& args)
     {
-        if (!m_RenderEncoder || !m_CurrentGraphicsPipeline)
+        if (!m_CurrentGraphicsPipeline)
+            return;
+
+        if (!m_RenderEncoder && !reopenRenderEncoder())
             return;
 
         if (m_CurrentGraphicsPipeline->vertexPushConstants)
@@ -747,7 +894,10 @@ namespace nvrhi::metal
 
     void CommandList::drawIndirect(uint32_t offsetBytes, uint32_t drawCount)
     {
-        if (!m_RenderEncoder || !m_CurrentGraphicsPipeline || !m_IndirectBuffer)
+        if (!m_CurrentGraphicsPipeline || !m_IndirectBuffer)
+            return;
+
+        if (!m_RenderEncoder && !reopenRenderEncoder())
             return;
 
         for (uint32_t draw = 0; draw < drawCount; ++draw)
@@ -759,7 +909,10 @@ namespace nvrhi::metal
 
     void CommandList::drawIndexedIndirect(uint32_t offsetBytes, uint32_t drawCount)
     {
-        if (!m_RenderEncoder || !m_CurrentGraphicsPipeline || !m_IndexBuffer.buffer || !m_IndirectBuffer)
+        if (!m_CurrentGraphicsPipeline || !m_IndexBuffer.buffer || !m_IndirectBuffer)
+            return;
+
+        if (!m_RenderEncoder && !reopenRenderEncoder())
             return;
 
         const Buffer* indexBuffer = checked_cast<Buffer*>(m_IndexBuffer.buffer);
@@ -788,34 +941,28 @@ namespace nvrhi::metal
 
     void CommandList::bindPushConstants(uint32_t bufferIndex, uint32_t size, ShaderType stage)
     {
-        if (bufferIndex == UINT32_MAX || size == 0)
+        if (bufferIndex == UINT32_MAX || size == 0 || m_PushConstants.empty())
             return;
 
-        if (!m_PushConstantBuffer || m_PushConstantBuffer.length < size)
-        {
-            m_PushConstantBuffer = [m_Device->getContext().device newBufferWithLength:size options:MTLResourceStorageModeShared];
-            if (!m_PushConstantBuffer)
-                return;
-
-            memset(m_PushConstantBuffer.contents, 0, size);
-        }
-
-        memcpy(m_PushConstantBuffer.contents, m_PushConstants.data(), std::min(size, uint32_t(m_PushConstants.size())));
+        // The bytes are set on the encoder instead of a buffer, so a later setPushConstants
+        // cannot change what an earlier encoded dispatch or draw has already received.
+        const void* data = m_PushConstants.data();
+        const NSUInteger length = std::min(size, uint32_t(m_PushConstants.size()));
 
         if (stage == ShaderType::Compute)
         {
             if (m_ComputeEncoder)
-                [m_ComputeEncoder setBuffer:m_PushConstantBuffer offset:0 atIndex:bufferIndex];
+                [m_ComputeEncoder setBytes:data length:length atIndex:bufferIndex];
         }
         else if (stage == ShaderType::Vertex)
         {
             if (m_RenderEncoder)
-                [m_RenderEncoder setVertexBuffer:m_PushConstantBuffer offset:0 atIndex:bufferIndex];
+                [m_RenderEncoder setVertexBytes:data length:length atIndex:bufferIndex];
         }
         else
         {
             if (m_RenderEncoder)
-                [m_RenderEncoder setFragmentBuffer:m_PushConstantBuffer offset:0 atIndex:bufferIndex];
+                [m_RenderEncoder setFragmentBytes:data length:length atIndex:bufferIndex];
         }
     }
 

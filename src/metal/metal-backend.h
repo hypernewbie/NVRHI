@@ -29,8 +29,10 @@
 
 #include "metal-spirv.h"
 
+#include <map>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -49,6 +51,11 @@ namespace nvrhi::metal
     class BindingSet;
     class InputLayout;
 
+    // Metal shares one buffer index namespace between the stage-in vertex attributes and the
+    // shader buffer arguments. The vertex attributes take the high indices above the range the
+    // NVRHI vertex buffer slots use, so the translated buffers keep the low indices.
+    constexpr uint32_t c_VertexBufferBase = 16;
+
     struct Context
     {
         id<MTLDevice> device = nil;
@@ -56,7 +63,7 @@ namespace nvrhi::metal
         IMessageCallback* messageCallback = nullptr;
 
         // The Metal language version the shaders are compiled against.
-        uint32_t mslVersionMajor = 2;
+        uint32_t mslVersionMajor = 3;
         uint32_t mslVersionMinor = 0;
 
         void error(const std::string& message) const;
@@ -80,10 +87,18 @@ namespace nvrhi::metal
         void* mappedMemory = nullptr;
         bool isCPUVisible = false;
 
+        // [UAA] Texture-buffer views of this buffer for typed buffer bindings, keyed
+        // by format, byte offset and byte size like the views of a Vulkan texture.
+        std::map<std::tuple<Format, uint64_t, uint64_t>, id<MTLTexture>> typedViews;
+
         const BufferDesc& getDesc() const override { return desc; }
         GpuVirtualAddress getGpuVirtualAddress() const override { return 0; }
         Object getNativeObject(ObjectType objectType) override;
     };
+
+    // [UAA] Returns a texture-buffer view of the buffer range for a typed buffer binding,
+    // creating and caching it on the buffer on first use.
+    id<MTLTexture> getTypedBufferView(Context& context, Buffer* buffer, Format format, uint64_t byteOffset, uint64_t byteSize);
 
     class StagingTexture : public RefCounter<IStagingTexture>
     {
@@ -105,10 +120,35 @@ namespace nvrhi::metal
         id<MTLTexture> texture = nil;
         bool isCPUVisible = false;
 
+        // [UAA] Subresource views, keyed by the range, dimension, format and channel mapping
+        // of the binding that asked for them and reused like the views of a Vulkan texture.
+        struct ViewKey
+        {
+            uint32_t baseMipLevel = 0;
+            uint32_t numMipLevels = 1;
+            uint32_t baseArraySlice = 0;
+            uint32_t numArraySlices = 1;
+            TextureDimension dimension = TextureDimension::Unknown;
+            Format format = Format::UNKNOWN;
+            uint16_t componentMapping = 0;
+
+            bool operator<(const ViewKey& other) const
+            {
+                return std::tie(baseMipLevel, numMipLevels, baseArraySlice, numArraySlices, dimension, format, componentMapping)
+                    < std::tie(other.baseMipLevel, other.numMipLevels, other.baseArraySlice, other.numArraySlices, other.dimension, other.format, other.componentMapping);
+            }
+        };
+        std::map<ViewKey, id<MTLTexture>> views;
+
         const TextureDesc& getDesc() const override { return desc; }
         Object getNativeObject(ObjectType objectType) override;
         Object getNativeView(ObjectType objectType, Format format, TextureSubresourceSet subresources, TextureDimension dimension, bool isReadOnlyDSV = false,
             std::optional<ComponentMapping> overrideComponentMapping = std::nullopt) override;
+
+        // [UAA] Returns a view of the subresources as the given dimension, format and channel
+        // mapping, creating and caching it on first use. The entire texture with its own format
+        // and an identity mapping returns the base texture.
+        id<MTLTexture> getSubresourceView(const TextureSubresourceSet& subresources, TextureDimension dimension, Format format, ComponentMapping componentMapping);
     };
 
     class Sampler : public RefCounter<ISampler>
@@ -327,6 +367,7 @@ namespace nvrhi::metal
         id<MTLComputeCommandEncoder> getComputeEncoder();
         id<MTLBlitCommandEncoder> getBlitEncoder();
         id<MTLRenderCommandEncoder> getRenderEncoder(Framebuffer* framebuffer);
+        bool reopenRenderEncoder();
 
         void bindComputeResources(const ComputeState& state);
         void bindGraphicsResources(const GraphicsState& state);
@@ -348,8 +389,12 @@ namespace nvrhi::metal
         nvrhi::IndexBufferBinding m_IndexBuffer;
         Buffer* m_IndirectBuffer = nullptr;
 
+        // The current states are kept so a transfer or clear that ends an encoder can
+        // re-apply the state when the next dispatch or draw opens a new one.
+        ComputeState m_CurrentComputeState;
+        GraphicsState m_CurrentGraphicsState;
+
         std::vector<uint8_t> m_PushConstants;
-        id<MTLBuffer> m_PushConstantBuffer = nil;
 
         bool m_IsOpen = false;
     };

@@ -80,16 +80,86 @@ namespace nvrhi::metal
         return nullptr;
     }
 
-    Object Texture::getNativeView(ObjectType objectType, Format format, TextureSubresourceSet subresources, TextureDimension dimension, bool isReadOnlyDSV, std::optional<ComponentMapping> overrideComponentMapping)
+    namespace
     {
-        (void)format;
-        (void)subresources;
-        (void)dimension;
+        MTLTextureType convertViewTextureType(TextureDimension dimension)
+        {
+            switch (dimension)
+            {
+            case TextureDimension::Texture1D:        return MTLTextureType1D;
+            case TextureDimension::Texture1DArray:   return MTLTextureType1DArray;
+            case TextureDimension::Texture2DArray:   return MTLTextureType2DArray;
+            case TextureDimension::Texture2DMS:      return MTLTextureType2DMultisample;
+            case TextureDimension::Texture2DMSArray: return MTLTextureType2DMultisampleArray;
+            case TextureDimension::Texture3D:        return MTLTextureType3D;
+            case TextureDimension::TextureCube:      return MTLTextureTypeCube;
+            case TextureDimension::TextureCubeArray: return MTLTextureTypeCubeArray;
+            default:                                 return MTLTextureType2D;
+            }
+        }
+
+        MTLTextureSwizzle convertComponentSwizzle(ComponentSwizzle swizzle)
+        {
+            switch (swizzle)
+            {
+            case ComponentSwizzle::Zero: return MTLTextureSwizzleZero;
+            case ComponentSwizzle::One:  return MTLTextureSwizzleOne;
+            case ComponentSwizzle::R:    return MTLTextureSwizzleRed;
+            case ComponentSwizzle::G:    return MTLTextureSwizzleGreen;
+            case ComponentSwizzle::B:    return MTLTextureSwizzleBlue;
+            default:                     return MTLTextureSwizzleAlpha;
+            }
+        }
+    }
+
+    id<MTLTexture> Texture::getSubresourceView(const TextureSubresourceSet& subresources, TextureDimension dimension, Format format, ComponentMapping componentMapping)
+    {
+        const TextureSubresourceSet resolved = subresources.resolve(desc, true);
+        const Format viewFormat = format == Format::UNKNOWN ? desc.format : format;
+        const ComponentMapping viewMapping = componentMapping.isIdentity() ? desc.defaultComponentMapping : componentMapping;
+
+        if (subresources.isEntireTexture(desc) && viewFormat == desc.format && viewMapping.isIdentity())
+            return texture;
+
+        const uint16_t packedMapping = uint16_t(viewMapping.r) | (uint16_t(viewMapping.g) << 4) | (uint16_t(viewMapping.b) << 8) | (uint16_t(viewMapping.a) << 12);
+
+        ViewKey key;
+        key.baseMipLevel = resolved.baseMipLevel;
+        key.numMipLevels = resolved.numMipLevels;
+        key.baseArraySlice = resolved.baseArraySlice;
+        key.numArraySlices = resolved.numArraySlices;
+        key.dimension = dimension;
+        key.format = viewFormat;
+        key.componentMapping = packedMapping;
+
+        const auto cached = views.find(key);
+        if (cached != views.end())
+            return cached->second;
+
+        MTLTextureViewDescriptor* descriptor = [[MTLTextureViewDescriptor alloc] init];
+        descriptor.pixelFormat = convertFormat(viewFormat);
+        descriptor.textureType = dimension == TextureDimension::Unknown ? texture.textureType : convertViewTextureType(dimension);
+        descriptor.levelRange = NSMakeRange(resolved.baseMipLevel, resolved.numMipLevels);
+        descriptor.sliceRange = NSMakeRange(resolved.baseArraySlice, resolved.numArraySlices);
+        descriptor.swizzle = MTLTextureSwizzleChannelsMake(
+            convertComponentSwizzle(viewMapping.r), convertComponentSwizzle(viewMapping.g),
+            convertComponentSwizzle(viewMapping.b), convertComponentSwizzle(viewMapping.a));
+
+        id<MTLTexture> view = [texture newTextureViewWithDescriptor:descriptor];
+        views.emplace(key, view);
+        return view;
+    }
+
+    Object Texture::getNativeView(ObjectType objectType, Format format, TextureSubresourceSet subresources, TextureDimension dimension, bool isReadOnlyDSV,
+        std::optional<ComponentMapping> overrideComponentMapping)
+    {
         (void)isReadOnlyDSV;
-        (void)overrideComponentMapping;
 
         if (objectType == ObjectTypes::Metal_Texture)
-            return Object((__bridge void*)texture);
+        {
+            const ComponentMapping mapping = overrideComponentMapping ? *overrideComponentMapping : desc.defaultComponentMapping;
+            return Object((__bridge void*)getSubresourceView(subresources, dimension, format, mapping));
+        }
 
         return nullptr;
     }
@@ -293,7 +363,7 @@ namespace nvrhi::metal
                 MTLVertexAttributeDescriptor* attributeDescriptor = [[MTLVertexAttributeDescriptor alloc] init];
                 attributeDescriptor.format = convertVertexFormat(attribute.format);
                 attributeDescriptor.offset = attribute.offset;
-                attributeDescriptor.bufferIndex = attribute.bufferIndex;
+                attributeDescriptor.bufferIndex = c_VertexBufferBase + attribute.bufferIndex;
                 [attributeDescriptors addObject:attributeDescriptor];
             }
 
@@ -303,7 +373,7 @@ namespace nvrhi::metal
             for (uint32_t i = 0; i < numBufferSlots; ++i)
             {
                 if (bufferLayouts[i])
-                    [vertexDescriptor.layouts setObject:bufferLayouts[i] atIndexedSubscript:i];
+                    [vertexDescriptor.layouts setObject:bufferLayouts[i] atIndexedSubscript:c_VertexBufferBase + i];
             }
             pipelineDescriptor.vertexDescriptor = vertexDescriptor;
         }

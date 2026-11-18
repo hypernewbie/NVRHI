@@ -100,6 +100,7 @@ namespace nvrhi::metal
             spirv_cross::CompilerMSL::Options options;
             options.set_msl_version(mslVersionMajor, mslVersionMinor);
             options.platform = spirv_cross::CompilerMSL::Options::macOS;
+            options.texture_buffer_native = true;
 
             compiler.set_msl_options(options);
 
@@ -126,17 +127,6 @@ namespace nvrhi::metal
             collect(resources.separate_images, ResourceKind::Texture);
             collect(resources.storage_images, ResourceKind::Texture);
             collect(resources.separate_samplers, ResourceKind::Sampler);
-
-            // Texel buffers are images in SPIR-V, but they are buffers in Metal.
-            for (const auto& resource : resources.separate_images)
-            {
-                const spirv_cross::SPIRType& type = compiler.get_type_from_variable(resource.id);
-                if (type.image.dim == spv::DimBuffer)
-                {
-                    error = "typed buffers are not supported";
-                    return false;
-                }
-            }
 
             if (!resources.sampled_images.empty())
             {

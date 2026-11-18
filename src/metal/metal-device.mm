@@ -45,6 +45,46 @@ namespace nvrhi::metal
             messageCallback->message(MessageSeverity::Info, message.c_str());
     }
 
+    // A typed buffer is a texture in the shader but a buffer in NVRHI, so the binding needs
+    // a texture-buffer view of the range. The views are cached on the buffer because the
+    // command list binds them at draw time.
+    id<MTLTexture> getTypedBufferView(Context& context, Buffer* buffer, Format format, uint64_t byteOffset, uint64_t byteSize)
+    {
+        const Format viewFormat = format == Format::UNKNOWN ? Format::R32_UINT : format;
+        const MTLPixelFormat pixelFormat = convertFormat(viewFormat);
+        const FormatInfo& formatInfo = getFormatInfo(viewFormat);
+        if (pixelFormat == MTLPixelFormatInvalid || formatInfo.bytesPerBlock == 0)
+        {
+            context.error("getTypedBufferView: the typed buffer format is not supported");
+            return nil;
+        }
+
+        if (byteSize == 0)
+            byteSize = buffer->desc.byteSize - byteOffset;
+
+        const auto key = std::make_tuple(viewFormat, byteOffset, byteSize);
+        const auto cached = buffer->typedViews.find(key);
+        if (cached != buffer->typedViews.end())
+            return cached->second;
+
+        const uint64_t alignment = [context.device minimumTextureBufferAlignmentForPixelFormat:pixelFormat];
+        const uint64_t width = byteSize / formatInfo.bytesPerBlock;
+        if ((byteOffset % alignment) != 0 || (byteSize % formatInfo.bytesPerBlock) != 0
+            || byteOffset + byteSize > buffer->desc.byteSize)
+        {
+            context.error("getTypedBufferView: the range cannot be viewed as a typed buffer");
+            return nil;
+        }
+
+        MTLTextureDescriptor* descriptor = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:pixelFormat
+            width:width resourceOptions:buffer->buffer.resourceOptions
+            usage:MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite];
+        id<MTLTexture> view = [buffer->buffer newTextureWithDescriptor:descriptor offset:byteOffset bytesPerRow:width * formatInfo.bytesPerBlock];
+
+        buffer->typedViews.emplace(key, view);
+        return view;
+    }
+
     DeviceHandle createDevice(const DeviceDesc& desc)
     {
         Device* device = new Device(desc);
@@ -617,15 +657,15 @@ namespace nvrhi::metal
         if (!list)
             return 0;
 
+        id<MTLCommandBuffer> commandBuffer = list->getCommandBuffer();
+        if (!commandBuffer)
+            return 0;
+
         uint64_t serial = 0;
         {
             std::lock_guard< std::mutex > lock(m_Mutex);
             serial = ++m_LastSubmittedSerial;
         }
-
-        id<MTLCommandBuffer> commandBuffer = list->getCommandBuffer();
-        if (!commandBuffer)
-            return serial;
 
         __block uint64_t completedSerial = serial;
         [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
