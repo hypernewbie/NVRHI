@@ -57,6 +57,11 @@ namespace nvrhi::metal
             if ( info.hasBlue ) values[valueIndex++] = color.b;
             if ( info.hasAlpha ) values[valueIndex++] = color.a;
 
+            // A BGRA texel stores blue before red, so the memory order of the first two
+            // colour components swaps while the logical clear colour stays RGBA.
+            if (format == Format::BGRA8_UNORM || format == Format::SBGRA8_UNORM || format == Format::BGRA4_UNORM)
+                std::swap(values[0], values[2]);
+
             for ( uint32_t row = 0; row < rows; ++row )
             for ( uint32_t pixel = 0; pixel < pixelsPerRow; ++pixel )
             {

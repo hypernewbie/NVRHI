@@ -887,7 +887,15 @@ namespace nvrhi::metal
     {
         (void)waitQueue;
         (void)executionQueue;
-        (void)instance;
+
+        if (instance == 0)
+            return;
+
+        std::unique_lock<std::mutex> lock(m_CompletionMutex);
+        m_CompletionCondition.wait(lock, [this, instance] {
+            std::lock_guard<std::mutex> submitLock(m_Mutex);
+            return m_LastCompletedSerial >= instance;
+        });
     }
 
     bool Device::waitForIdle()
