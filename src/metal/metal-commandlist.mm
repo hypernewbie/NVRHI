@@ -200,6 +200,34 @@ namespace nvrhi::metal
         bindComputeResources(state);
     }
 
+    namespace
+    {
+        // The shape a table slot's resource type takes in the Metal argument namespaces.
+        bool getBindlessArrayShape(ResourceType type, ResourceKind& kind, bool& writeable)
+        {
+            switch (type)
+            {
+            case ResourceType::Texture_SRV:
+            case ResourceType::TypedBuffer_SRV:
+                kind = ResourceKind::Texture; writeable = false; return true;
+            case ResourceType::Texture_UAV:
+            case ResourceType::TypedBuffer_UAV:
+                kind = ResourceKind::Texture; writeable = true; return true;
+            case ResourceType::ConstantBuffer:
+            case ResourceType::StructuredBuffer_SRV:
+            case ResourceType::RawBuffer_SRV:
+                kind = ResourceKind::Buffer; writeable = false; return true;
+            case ResourceType::StructuredBuffer_UAV:
+            case ResourceType::RawBuffer_UAV:
+                kind = ResourceKind::Buffer; writeable = true; return true;
+            case ResourceType::Sampler:
+                kind = ResourceKind::Sampler; writeable = false; return true;
+            default:
+                return false;
+            }
+        }
+    }
+
     void CommandList::bindComputeResources(const ComputeState& state)
     {
         id<MTLComputeCommandEncoder> encoder = getComputeEncoder();
@@ -208,14 +236,20 @@ namespace nvrhi::metal
 
         for (uint32_t i = 0; i < state.bindings.size(); ++i)
         {
-            BindingSet* bindingSet = checked_cast<BindingSet*>(state.bindings[i]);
-            if (!bindingSet)
+            nvrhi::IBindingSet* binding = state.bindings[i];
+            if (!binding || !binding->getLayout())
                 continue;
 
-            const BindingLayout* layout = checked_cast<BindingLayout*>(bindingSet->layout.Get());
-            if (!layout)
-                continue;
+            const BindingLayout* layout = checked_cast<BindingLayout*>(binding->getLayout());
 
+            // A descriptor table binds its slots as array elements of the bindless arrays.
+            if (layout->isBindless)
+            {
+                bindDescriptorTable(checked_cast<DescriptorTable*>(binding), m_CurrentComputePipeline->plan);
+                continue;
+            }
+
+            const BindingSet* bindingSet = checked_cast<BindingSet*>(binding);
             const ShaderType stage = layout->desc.visibility;
 
             for (const auto& item : bindingSet->desc.bindings)
@@ -329,11 +363,27 @@ namespace nvrhi::metal
 
     // ------------------------------------------------------------------ Transfers
 
+    // Verifies that a permanently pinned resource is usable for the state an operation
+    // requires, the diagnostic the Vulkan backend produces from its state tracker.
+    void CommandList::verifyPermanentState(TextureStateExtension* texture, ResourceStates state)
+    {
+        if (texture->permanentState != ResourceStates::Unknown)
+            verifyPermanentResourceState(texture->permanentState, state, true, texture->descRef.debugName, m_Device->getMessageCallback());
+    }
+
+    void CommandList::verifyPermanentState(BufferStateExtension* buffer, ResourceStates state)
+    {
+        if (buffer->permanentState != ResourceStates::Unknown)
+            verifyPermanentResourceState(buffer->permanentState, state, false, buffer->descRef.debugName, m_Device->getMessageCallback());
+    }
+
     void CommandList::writeBuffer(IBuffer* b, const void* data, size_t dataSize, uint64_t destOffsetBytes)
     {
         Buffer* buffer = checked_cast<Buffer*>(b);
         if (!buffer || !buffer->buffer || dataSize == 0)
             return;
+
+        verifyPermanentState(buffer, ResourceStates::CopyDest);
 
         id<MTLBuffer> source = [m_Device->getContext().device newBufferWithBytes:data length:dataSize options:MTLResourceStorageModeShared];
         if (!source)
@@ -349,6 +399,9 @@ namespace nvrhi::metal
         if (!destBuffer || !srcBuffer || dataSizeBytes == 0)
             return;
 
+        verifyPermanentState(destBuffer, ResourceStates::CopyDest);
+        verifyPermanentState(srcBuffer, ResourceStates::CopySource);
+
         [getBlitEncoder() copyFromBuffer:srcBuffer->buffer sourceOffset:srcOffsetBytes toBuffer:destBuffer->buffer destinationOffset:destOffsetBytes size:dataSizeBytes];
     }
 
@@ -357,6 +410,8 @@ namespace nvrhi::metal
         Buffer* buffer = checked_cast<Buffer*>(b);
         if (!buffer || !buffer->buffer)
             return;
+
+        verifyPermanentState(buffer, ResourceStates::CopyDest);
 
         const uint64_t size = buffer->desc.byteSize;
         std::vector<uint32_t> data(size / sizeof(uint32_t), clearValue);
@@ -373,6 +428,8 @@ namespace nvrhi::metal
         Texture* texture = checked_cast<Texture*>(dest);
         if (!texture || !texture->texture || !data)
             return;
+
+        verifyPermanentState(texture, ResourceStates::CopyDest);
 
         const TextureDesc& desc = texture->desc;
         const uint32_t width = getMipSize(desc.width, mipLevel);
@@ -409,6 +466,9 @@ namespace nvrhi::metal
         if (!destTexture || !srcTexture)
             return;
 
+        verifyPermanentState(destTexture, ResourceStates::CopyDest);
+        verifyPermanentState(srcTexture, ResourceStates::CopySource);
+
         const uint32_t width = srcSlice.width == uint32_t(-1) ? getMipSize(srcTexture->desc.width, srcSlice.mipLevel) : srcSlice.width;
         const uint32_t height = srcSlice.height == uint32_t(-1) ? getMipSize(srcTexture->desc.height, srcSlice.mipLevel) : srcSlice.height;
         const uint32_t depth = srcSlice.depth == uint32_t(-1) ? 1 : srcSlice.depth;
@@ -425,6 +485,8 @@ namespace nvrhi::metal
         Texture* srcTexture = checked_cast<Texture*>(src);
         if (!staging || !srcTexture || !staging->buffer)
             return;
+
+        verifyPermanentState(srcTexture, ResourceStates::CopySource);
 
         const uint32_t mip = srcSlice.mipLevel;
         if (mip >= staging->mipOffsets.size())
@@ -446,6 +508,8 @@ namespace nvrhi::metal
         if (!destTexture || !staging || !staging->buffer)
             return;
 
+        verifyPermanentState(destTexture, ResourceStates::CopyDest);
+
         const uint32_t mip = srcSlice.mipLevel;
         if (mip >= staging->mipOffsets.size())
             return;
@@ -465,6 +529,9 @@ namespace nvrhi::metal
         Texture* srcTexture = checked_cast<Texture*>(src);
         if (!destTexture || !srcTexture)
             return;
+
+        verifyPermanentState(destTexture, ResourceStates::ResolveDest);
+        verifyPermanentState(srcTexture, ResourceStates::ResolveSource);
 
         // Metal resolves through the render pass, one pass per subresource.
         const TextureSubresourceSet resolved = srcSubresources.resolve(srcTexture->desc, true);
@@ -518,6 +585,8 @@ namespace nvrhi::metal
         if (!texture)
             return;
 
+        verifyPermanentState(texture, ResourceStates::CopyDest);
+
         clearTexture(texture, subresources, clearColor, 0, false);
     }
 
@@ -526,6 +595,8 @@ namespace nvrhi::metal
         Texture* texture = checked_cast<Texture*>(t);
         if (!texture)
             return;
+
+        verifyPermanentState(texture, ResourceStates::CopyDest);
 
         clearTexture(texture, subresources, Color(), clearColor, true);
     }
@@ -537,6 +608,8 @@ namespace nvrhi::metal
         Texture* texture = checked_cast<Texture*>(t);
         if (!texture)
             return;
+
+        verifyPermanentState(texture, ResourceStates::DepthWrite);
 
         // Metal clears a depth attachment through the render pass.
         endEncoder();
@@ -742,14 +815,20 @@ namespace nvrhi::metal
     {
         for (uint32_t i = 0; i < state.bindings.size(); ++i)
         {
-            const BindingSet* bindingSet = checked_cast<BindingSet*>(state.bindings[i]);
-            if (!bindingSet)
+            nvrhi::IBindingSet* binding = state.bindings[i];
+            if (!binding || !binding->getLayout())
                 continue;
 
-            const BindingLayout* layout = checked_cast<BindingLayout*>(bindingSet->layout.Get());
-            if (!layout)
-                continue;
+            const BindingLayout* layout = checked_cast<BindingLayout*>(binding->getLayout());
 
+            // A descriptor table binds its slots as array elements of the bindless arrays.
+            if (layout->isBindless)
+            {
+                bindDescriptorTable(checked_cast<DescriptorTable*>(binding), m_CurrentGraphicsPipeline->plan);
+                continue;
+            }
+
+            const BindingSet* bindingSet = checked_cast<BindingSet*>(binding);
             const ShaderType stage = layout->desc.visibility;
 
             for (const auto& item : bindingSet->desc.bindings)
@@ -759,6 +838,40 @@ namespace nvrhi::metal
                     continue;
 
                 bindGraphicsResource(entry->bound, item, stage == ShaderType::Vertex);
+            }
+        }
+    }
+
+    void CommandList::bindDescriptorTable(DescriptorTable* table, const PipelineBindingPlan& plan)
+    {
+        const BindingLayout* layout = checked_cast<BindingLayout*>(table->layout.Get());
+
+        for (size_t space = 0; space < table->slots.size(); ++space)
+        {
+            ResourceKind kind = ResourceKind::Buffer;
+            bool writeable = false;
+            if (!getBindlessArrayShape(layout->bindlessDesc.registerSpaces[space].type, kind, writeable))
+                continue;
+
+            const ResourceBinding* array = plan.findBindlessArray(kind, writeable);
+            if (!array)
+                continue;
+
+            for (const auto& item : table->slots[space])
+            {
+                if (item.type == ResourceType::None || !item.resourceHandle)
+                    continue;
+
+                if (item.slot >= array->count)
+                    continue;
+
+                BoundResource bound;
+                bound.kind = array->kind;
+                bound.index = array->index + item.slot;
+
+                bindResource(bound, item);
+                bindGraphicsResource(bound, item, true);
+                bindGraphicsResource(bound, item, false);
             }
         }
     }
@@ -1149,16 +1262,45 @@ namespace nvrhi::metal
         (void)stateBits;
     }
 
-    void CommandList::setPermanentTextureState(ITexture* texture, ResourceStates stateBits)
+    void CommandList::setPermanentTextureState(ITexture* _texture, ResourceStates stateBits)
     {
-        (void)texture;
-        (void)stateBits;
+        Texture* texture = checked_cast<Texture*>(_texture);
+        if (texture)
+            m_PermanentTextureStates.push_back({ texture, stateBits });
     }
 
-    void CommandList::setPermanentBufferState(IBuffer* buffer, ResourceStates stateBits)
+    void CommandList::setPermanentBufferState(IBuffer* _buffer, ResourceStates stateBits)
     {
-        (void)buffer;
-        (void)stateBits;
+        Buffer* buffer = checked_cast<Buffer*>(_buffer);
+        if (buffer)
+            m_PermanentBufferStates.push_back({ buffer, stateBits });
+    }
+
+    void CommandList::applyPermanentStates()
+    {
+        for (auto& [texture, state] : m_PermanentTextureStates)
+        {
+            if (texture->permanentState != ResourceStates::Unknown && texture->permanentState != state)
+            {
+                m_Device->getContext().error("Attempted to switch permanent state of texture " + texture->descRef.debugName);
+                continue;
+            }
+
+            texture->permanentState = state;
+        }
+        m_PermanentTextureStates.clear();
+
+        for (auto& [buffer, state] : m_PermanentBufferStates)
+        {
+            if (buffer->permanentState != ResourceStates::Unknown && buffer->permanentState != state)
+            {
+                m_Device->getContext().error("Attempted to switch permanent state of buffer " + buffer->descRef.debugName);
+                continue;
+            }
+
+            buffer->permanentState = state;
+        }
+        m_PermanentBufferStates.clear();
     }
 
     void CommandList::commitBarriers()

@@ -36,6 +36,65 @@ namespace nvrhi::metal
             *pSize = source.size();
     }
 
+    // The bindless descriptor set after the VRHI loader remap, where the runtime
+    // sized arrays live.
+    constexpr uint32_t c_BindlessDescriptorSet = 0;
+
+    // Compiles the entry point of a translation, including the reserved entry rename.
+    static id<MTLFunction> compileEntryFunction(Context& context, const TranslatedShader& translated, const ShaderDesc& d)
+    {
+        NSError* nsError = nil;
+        MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
+        id<MTLLibrary> library = [context.device newLibraryWithSource:@(translated.source.c_str()) options:options error:&nsError];
+        if (!library)
+        {
+            context.error("compileEntryFunction: failed to compile '" + d.debugName + "': " + std::string(nsError ? nsError.localizedDescription.UTF8String : "unknown error"));
+            return nil;
+        }
+
+        // SPIRV-Cross renames the entry point when it collides with a reserved name.
+        id<MTLFunction> function = [library newFunctionWithName:@(d.entryName.c_str())];
+        if (!function)
+        {
+            const std::string renamedEntry = d.entryName + "0";
+            function = [library newFunctionWithName:@(renamedEntry.c_str())];
+        }
+
+        if (!function)
+        {
+            context.error("compileEntryFunction: the entry point '" + d.entryName + "' is missing in '" + d.debugName + "'");
+            return nil;
+        }
+
+        return function;
+    }
+
+    const Shader::BindlessTranslation* Shader::getTranslationForCapacity(Context& context, uint32_t capacity) const
+    {
+        if (!translated.usesBindless)
+            return nullptr;
+
+        const auto cached = bindlessTranslations.find(capacity);
+        if (cached != bindlessTranslations.end())
+            return &cached->second;
+
+        BindlessTranslation translation;
+        std::string error;
+        if (!translateSpirvToMSL(spirv.data(), spirv.size() * sizeof(uint32_t), desc.shaderType, desc.entryName,
+            context.mslVersionMajor, context.mslVersionMinor, c_BindlessDescriptorSet, capacity,
+            translation.translated, error))
+        {
+            context.error("getTranslationForCapacity: failed to translate '" + desc.debugName + "': " + error);
+            return nullptr;
+        }
+
+        translation.function = compileEntryFunction(context, translation.translated, desc);
+        if (!translation.function)
+            return nullptr;
+
+        return &bindlessTranslations.emplace(capacity, std::move(translation)).first->second;
+    }
+
     Object Shader::getNativeObject(ObjectType objectType)
     {
         if (objectType == ObjectTypes::Metal_ShaderLibrary)
@@ -164,10 +223,24 @@ namespace nvrhi::metal
         return nullptr;
     }
 
+    Object DescriptorTable::getNativeObject(ObjectType objectType)
+    {
+        (void)objectType;
+        return nullptr;
+    }
+
     Object Sampler::getNativeObject(ObjectType objectType)
     {
         if (objectType == ObjectTypes::Metal_Sampler)
             return Object((__bridge void*)sampler);
+
+        return nullptr;
+    }
+
+    Object Heap::getNativeObject(ObjectType objectType)
+    {
+        if (objectType == ObjectTypes::Metal_Heap)
+            return Object((__bridge void*)heap);
 
         return nullptr;
     }
@@ -198,29 +271,35 @@ namespace nvrhi::metal
 
         // The pipeline binds the resources of its shaders; the descriptor set of a resource
         // is the position of its binding layout in the pipeline.
-        void buildBindingPlan(PipelineBindingPlan& plan, const BindingLayoutVector& layouts, const Shader* shader)
+        void buildBindingPlan(PipelineBindingPlan& plan, const BindingLayoutVector& layouts, const TranslatedShader& translated)
         {
-            for (uint32_t descriptorSet = 0; descriptorSet < uint32_t(layouts.size()); ++descriptorSet)
+            for (const auto& resource : translated.resources)
             {
-                const BindingLayout* layout = checked_cast<BindingLayout*>(layouts[descriptorSet].Get());
-                if (!layout)
+                if (resource.runtimeArray)
+                {
+                    plan.bindlessArrays.push_back(resource);
+                    continue;
+                }
+
+                if (resource.descriptorSet >= layouts.size())
+                    continue;
+
+                const BindingLayout* layout = checked_cast<BindingLayout*>(layouts[resource.descriptorSet].Get());
+                if (!layout || layout->isBindless)
                     continue;
 
                 for (const auto& item : layout->desc.bindings)
                 {
-                    for (const auto& resource : shader->translated.resources)
-                    {
-                        if (resource.descriptorSet != descriptorSet || resource.binding != item.slot)
-                            continue;
+                    if (item.slot != resource.binding)
+                        continue;
 
-                        PipelineBindingPlan::Entry entry;
-                        entry.stage = shader->desc.shaderType;
-                        entry.descriptorSet = descriptorSet;
-                        entry.slot = item.slot;
-                        entry.bound.kind = resource.kind;
-                        entry.bound.index = resource.index;
-                        plan.entries.push_back(entry);
-                    }
+                    PipelineBindingPlan::Entry entry;
+                    entry.stage = translated.stage;
+                    entry.descriptorSet = resource.descriptorSet;
+                    entry.slot = item.slot;
+                    entry.bound.kind = resource.kind;
+                    entry.bound.index = resource.index;
+                    plan.entries.push_back(entry);
                 }
             }
         }
@@ -228,13 +307,24 @@ namespace nvrhi::metal
 
     ShaderHandle Device::createShader(const ShaderDesc& d, const void* binary, size_t binarySize)
     {
-        TranslatedShader translated;
+        Shader* shader = new Shader();
+        shader->desc = d;
+        shader->spirv.assign(reinterpret_cast<const uint32_t*>(binary), reinterpret_cast<const uint32_t*>(binary) + binarySize / sizeof(uint32_t));
+
+        TranslatedShader& translated = shader->translated;
         std::string error;
-        if (!translateSpirvToMSL(binary, binarySize, d.shaderType, d.entryName, m_Context.mslVersionMajor, m_Context.mslVersionMinor, translated, error))
+        if (!translateSpirvToMSL(binary, binarySize, d.shaderType, d.entryName, m_Context.mslVersionMajor, m_Context.mslVersionMinor,
+            c_BindlessDescriptorSet, 0, translated, error))
         {
             m_Context.error("createShader: failed to translate '" + d.debugName + "': " + error);
+            delete shader;
             return nullptr;
         }
+
+        // A runtime sized array has no function until the descriptor table capacity
+        // is known; the pipeline compiles the translation for its capacity.
+        if (translated.usesBindless)
+            return ShaderHandle::Create(shader);
 
         NSError* nsError = nil;
         MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
@@ -242,6 +332,7 @@ namespace nvrhi::metal
         if (!library)
         {
             m_Context.error("createShader: failed to compile '" + d.debugName + "': " + std::string(nsError ? nsError.localizedDescription.UTF8String : "unknown error"));
+            delete shader;
             return nullptr;
         }
 
@@ -256,15 +347,13 @@ namespace nvrhi::metal
         if (!function)
         {
             m_Context.error("createShader: the entry point '" + d.entryName + "' is missing in '" + d.debugName + "'");
+            delete shader;
             return nullptr;
         }
 
-        Shader* shader = new Shader();
-        shader->desc = d;
         shader->library = library;
         shader->function = function;
         shader->source = translated.source;
-        shader->translated = translated;
 
         return ShaderHandle::Create(shader);
     }
@@ -286,6 +375,51 @@ namespace nvrhi::metal
         return nullptr;
     }
 
+    // Resolves the translation of a shader for the bindless layout of the pipeline, or
+    // the eager translation of a shader without runtime sized arrays.
+    static const TranslatedShader* resolveTranslation(Context& context, const Shader* shader, const BindingLayoutVector& layouts)
+    {
+        if (!shader->translated.usesBindless)
+            return &shader->translated;
+
+        for (const auto& layoutHandle : layouts)
+        {
+            const BindingLayout* layout = checked_cast<BindingLayout*>(layoutHandle.Get());
+            if (!layout || !layout->isBindless)
+                continue;
+
+            const Shader::BindlessTranslation* translation = shader->getTranslationForCapacity(context, layout->bindlessDesc.maxCapacity);
+            return translation ? &translation->translated : nullptr;
+        }
+
+        // A bindless shader can run without a table bound, like the Vulkan backend builds
+        // the pipeline without the set; the array is never accessed then. A minimal
+        // capacity keeps the runtime sized array compilable.
+        const Shader::BindlessTranslation* translation = shader->getTranslationForCapacity(context, 1);
+        return translation ? &translation->translated : nullptr;
+    }
+
+    // Resolves the compiled function of a shader the same way the translation is resolved.
+    static id<MTLFunction> resolveFunction(Context& context, const Shader* shader, const BindingLayoutVector& layouts)
+    {
+        if (!shader->translated.usesBindless)
+            return shader->function;
+
+        for (const auto& layoutHandle : layouts)
+        {
+            const BindingLayout* layout = checked_cast<BindingLayout*>(layoutHandle.Get());
+            if (!layout || !layout->isBindless)
+                continue;
+
+            const Shader::BindlessTranslation* translation = shader->getTranslationForCapacity(context, layout->bindlessDesc.maxCapacity);
+            return translation ? translation->function : nil;
+        }
+
+        // The same minimal fallback the translation resolution makes.
+        const Shader::BindlessTranslation* translation = shader->getTranslationForCapacity(context, 1);
+        return translation ? translation->function : nil;
+    }
+
     ComputePipelineHandle Device::createComputePipeline(const ComputePipelineDesc& desc)
     {
         if (!desc.CS)
@@ -295,14 +429,19 @@ namespace nvrhi::metal
         }
 
         const Shader* shader = checked_cast<Shader*>(desc.CS.Get());
-        if (!shader || !shader->function)
+        if (!shader)
         {
             m_Context.error("createComputePipeline: the compute shader is not a Metal shader");
             return nullptr;
         }
 
+        const TranslatedShader* translation = resolveTranslation(m_Context, shader, desc.bindingLayouts);
+        id<MTLFunction> function = resolveFunction(m_Context, shader, desc.bindingLayouts);
+        if (!translation || !function)
+            return nullptr;
+
         NSError* nsError = nil;
-        id<MTLComputePipelineState> pipeline = [m_Context.device newComputePipelineStateWithFunction:shader->function error:&nsError];
+        id<MTLComputePipelineState> pipeline = [m_Context.device newComputePipelineStateWithFunction:function error:&nsError];
         if (!pipeline)
         {
             m_Context.error("createComputePipeline: failed to create the pipeline: " + std::string(nsError ? nsError.localizedDescription.UTF8String : "unknown error"));
@@ -312,29 +451,36 @@ namespace nvrhi::metal
         ComputePipeline* result = new ComputePipeline();
         result->desc = desc;
         result->pipeline = pipeline;
-        result->threadGroupSize[0] = shader->translated.threadGroupSize[0];
-        result->threadGroupSize[1] = shader->translated.threadGroupSize[1];
-        result->threadGroupSize[2] = shader->translated.threadGroupSize[2];
+        result->threadGroupSize[0] = translation->threadGroupSize[0];
+        result->threadGroupSize[1] = translation->threadGroupSize[1];
+        result->threadGroupSize[2] = translation->threadGroupSize[2];
 
-        buildBindingPlan(result->plan, desc.bindingLayouts, shader);
-        getPushConstantInfo(result->pushConstantBufferIndex, result->pushConstantSize, desc.bindingLayouts, shader->translated.usesPushConstants);
+        buildBindingPlan(result->plan, desc.bindingLayouts, *translation);
+        getPushConstantInfo(result->pushConstantBufferIndex, result->pushConstantSize, desc.bindingLayouts, translation->usesPushConstants);
 
         return ComputePipelineHandle::Create(result);
     }
 
     GraphicsPipelineHandle Device::createGraphicsPipeline(const GraphicsPipelineDesc& desc, FramebufferInfo const& fbinfo)
     {
-        const Shader* vertexShader = checked_cast<Shader*>(desc.VS.Get());
-        const Shader* pixelShader = checked_cast<Shader*>(desc.PS.Get());
-        if (!vertexShader || !pixelShader || !vertexShader->function || !pixelShader->function)
+        Shader* vertexShader = checked_cast<Shader*>(desc.VS.Get());
+        Shader* pixelShader = checked_cast<Shader*>(desc.PS.Get());
+        if (!vertexShader || !pixelShader)
         {
             m_Context.error("createGraphicsPipeline: the vertex and pixel shaders are required");
             return nullptr;
         }
 
+        const TranslatedShader* vertexTranslation = resolveTranslation(m_Context, vertexShader, desc.bindingLayouts);
+        const TranslatedShader* pixelTranslation = resolveTranslation(m_Context, pixelShader, desc.bindingLayouts);
+        id<MTLFunction> vertexFunction = resolveFunction(m_Context, vertexShader, desc.bindingLayouts);
+        id<MTLFunction> pixelFunction = resolveFunction(m_Context, pixelShader, desc.bindingLayouts);
+        if (!vertexTranslation || !pixelTranslation || !vertexFunction || !pixelFunction)
+            return nullptr;
+
         MTLRenderPipelineDescriptor* pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
-        pipelineDescriptor.vertexFunction = vertexShader->function;
-        pipelineDescriptor.fragmentFunction = pixelShader->function;
+        pipelineDescriptor.vertexFunction = vertexFunction;
+        pipelineDescriptor.fragmentFunction = pixelFunction;
 
         const InputLayout* inputLayout = checked_cast<InputLayout*>(desc.inputLayout.Get());
         if (inputLayout && inputLayout->getNumAttributes() > 0)
@@ -453,12 +599,12 @@ namespace nvrhi::metal
         result->primitiveType = convertPrimitiveType(desc.primType);
         result->depthStencilState = [m_Context.device newDepthStencilStateWithDescriptor:depthStencilDescriptor];
 
-        buildBindingPlan(result->plan, desc.bindingLayouts, vertexShader);
-        buildBindingPlan(result->plan, desc.bindingLayouts, pixelShader);
+        buildBindingPlan(result->plan, desc.bindingLayouts, *vertexTranslation);
+        buildBindingPlan(result->plan, desc.bindingLayouts, *pixelTranslation);
         getPushConstantInfo(result->pushConstantBufferIndex, result->pushConstantSize, desc.bindingLayouts,
-            vertexShader->translated.usesPushConstants || pixelShader->translated.usesPushConstants);
-        result->vertexPushConstants = vertexShader->translated.usesPushConstants;
-        result->pixelPushConstants = pixelShader->translated.usesPushConstants;
+            vertexTranslation->usesPushConstants || pixelTranslation->usesPushConstants);
+        result->vertexPushConstants = vertexTranslation->usesPushConstants;
+        result->pixelPushConstants = pixelTranslation->usesPushConstants;
 
         return GraphicsPipelineHandle::Create(result);
     }

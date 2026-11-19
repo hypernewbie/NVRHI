@@ -36,6 +36,8 @@ namespace nvrhi::metal
             uint32_t descriptorSet = 0;
             uint32_t binding = 0;
             ResourceKind kind = ResourceKind::Buffer;
+            bool writeable = false;
+            bool runtimeArray = false;
             uint32_t index = 0;
             uint32_t count = 1;
         };
@@ -75,6 +77,8 @@ namespace nvrhi::metal
         const std::string& entryName,
         uint32_t mslVersionMajor,
         uint32_t mslVersionMinor,
+        uint32_t bindlessSet,
+        uint32_t bindlessCapacity,
         TranslatedShader& out,
         std::string& error)
     {
@@ -108,7 +112,7 @@ namespace nvrhi::metal
 
             std::vector<ResourceEntry> entries;
 
-            auto collect = [&](const spirv_cross::SmallVector<spirv_cross::Resource>& list, ResourceKind kind)
+            auto collect = [&](const spirv_cross::SmallVector<spirv_cross::Resource>& list, ResourceKind kind, bool writeable)
             {
                 for (const auto& resource : list)
                 {
@@ -117,16 +121,25 @@ namespace nvrhi::metal
                     entry.descriptorSet = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
                     entry.binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
                     entry.kind = kind;
+                    entry.writeable = writeable;
                     entry.count = getResourceCount(compiler, resource.id);
                     entries.push_back(entry);
                 }
             };
 
-            collect(resources.uniform_buffers, ResourceKind::Buffer);
-            collect(resources.storage_buffers, ResourceKind::Buffer);
-            collect(resources.separate_images, ResourceKind::Texture);
-            collect(resources.storage_images, ResourceKind::Texture);
-            collect(resources.separate_samplers, ResourceKind::Sampler);
+            collect(resources.uniform_buffers, ResourceKind::Buffer, false);
+            collect(resources.storage_buffers, ResourceKind::Buffer, true);
+            collect(resources.separate_images, ResourceKind::Texture, false);
+            collect(resources.storage_images, ResourceKind::Texture, true);
+            collect(resources.separate_samplers, ResourceKind::Sampler, false);
+
+            // A read-only storage buffer is a structured buffer SRV, so its array must not
+            // take the shape of the read-write ones when a table slot is matched to it.
+            for (auto& entry : entries)
+            {
+                if (entry.kind == ResourceKind::Buffer && compiler.get_decoration(entry.id, spv::DecorationNonWritable))
+                    entry.writeable = false;
+            }
 
             if (!resources.sampled_images.empty())
             {
@@ -138,6 +151,36 @@ namespace nvrhi::metal
             {
                 error = "input attachments and acceleration structures are not supported";
                 return false;
+            }
+
+            // A runtime sized array has no size until the descriptor table capacity is
+            // known, so a module that uses one keeps its function deferred to the pipeline.
+            bool usesBindless = false;
+            for (auto& entry : entries)
+            {
+                if (entry.count != 0)
+                    continue;
+
+                if (entry.descriptorSet != bindlessSet)
+                {
+                    error = "a runtime sized array outside the bindless descriptor set is not supported";
+                    return false;
+                }
+
+                if (bindlessCapacity == 0)
+                {
+                    usesBindless = true;
+                    continue;
+                }
+
+                entry.runtimeArray = true;
+                entry.count = bindlessCapacity;
+            }
+
+            if (usesBindless)
+            {
+                out.usesBindless = true;
+                return true;
             }
 
             // Push constants live in their own buffer, so they take the first buffer slot
@@ -206,6 +249,8 @@ namespace nvrhi::metal
                 resource.descriptorSet = entry.descriptorSet;
                 resource.binding = entry.binding;
                 resource.kind = entry.kind;
+                resource.writeable = entry.writeable;
+                resource.runtimeArray = entry.runtimeArray;
                 resource.index = entry.index;
                 resource.count = entry.count;
                 out.resources.push_back(resource);
@@ -213,6 +258,7 @@ namespace nvrhi::metal
 
             out.usesPushConstants = usesPushConstants;
             out.pushConstantBufferIndex = 0;
+            out.stage = stage;
 
             if (model == spv::ExecutionModelGLCompute)
             {

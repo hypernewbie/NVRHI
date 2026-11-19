@@ -35,6 +35,7 @@ namespace nvrhi
         constexpr ObjectType Metal_Texture        = 0x00040005;
         constexpr ObjectType Metal_Sampler        = 0x00040006;
         constexpr ObjectType Metal_ShaderLibrary  = 0x00040007;
+        constexpr ObjectType Metal_Heap           = 0x00040008;
     };
 }
 
@@ -46,6 +47,11 @@ namespace nvrhi::metal
         // Borrowed native objects. The caller must not release them.
         virtual Object getNativeDevice() = 0;
         virtual Object getNativeCommandQueue() = 0;
+
+        // [UAA] Returns the device's recommended working set size, the closest Metal
+        // equivalent of the adapter memory the Vulkan backend reports.
+        virtual uint64_t getNativeDeviceMemorySize() = 0;
+        virtual uint64_t getNativeAllocatedSize() = 0;
 
         // [UAA] - START - mapped buffer write flush
         // Publishes host writes in a mapped buffer range to the device.

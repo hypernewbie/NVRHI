@@ -142,6 +142,18 @@ namespace nvrhi::metal
         return Object((__bridge void*)m_Context.queue);
     }
 
+    // [UAA] - START - adapter memory size
+    uint64_t Device::getNativeDeviceMemorySize()
+    {
+        return m_Context.device.recommendedMaxWorkingSetSize;
+    }
+
+    uint64_t Device::getNativeAllocatedSize()
+    {
+        return m_Context.device.currentAllocatedSize;
+    }
+    // [UAA] - END
+
     // [UAA] - START - mapped buffer write flush
     uint64_t Device::getMappedBufferFlushAlignment()
     {
@@ -151,8 +163,20 @@ namespace nvrhi::metal
     bool Device::flushMappedBuffer(IBuffer* buffer, uint64_t offset, uint64_t size)
     {
         Buffer* buf = checked_cast<Buffer*>(buffer);
-        if (!buf || !buf->buffer)
+        const bool supported = buf && buf->buffer && buf->desc.cpuAccess == CpuAccessMode::Write;
+
+        if (!supported)
+        {
+            m_Context.error("flushMappedBuffer: the buffer must be an NVRHI-owned write buffer");
             return false;
+        }
+
+        const bool inBounds = offset <= buf->desc.byteSize && size <= buf->desc.byteSize - offset;
+        if (size == 0 || !inBounds)
+        {
+            m_Context.error("flushMappedBuffer: the range is invalid");
+            return false;
+        }
 
         // Shared storage is coherent on Apple silicon, so only managed storage needs a publish.
         if (buf->buffer.storageMode == MTLStorageModeManaged)
@@ -195,8 +219,42 @@ namespace nvrhi::metal
 
     HeapHandle Device::createHeap(const HeapDesc& d)
     {
-        m_Context.error("createHeap: heaps are not supported by the Metal backend");
-        return nullptr;
+        MTLHeapDescriptor* descriptor = [[MTLHeapDescriptor alloc] init];
+        descriptor.size = d.capacity;
+        descriptor.type = MTLHeapTypePlacement;
+
+        switch (d.type)
+        {
+            case HeapType::DeviceLocal:
+                descriptor.storageMode = MTLStorageModePrivate;
+                break;
+            case HeapType::Upload:
+                descriptor.storageMode = MTLStorageModeShared;
+                descriptor.cpuCacheMode = MTLCPUCacheModeWriteCombined;
+                break;
+            case HeapType::Readback:
+                descriptor.storageMode = MTLStorageModeShared;
+                descriptor.cpuCacheMode = MTLCPUCacheModeDefaultCache;
+                break;
+            default:
+                utils::InvalidEnum();
+                return nullptr;
+        }
+
+        id<MTLHeap> heap = [m_Context.device newHeapWithDescriptor:descriptor];
+        if (!heap)
+        {
+            m_Context.error("createHeap: failed to create the Metal heap");
+            return nullptr;
+        }
+
+        if (!d.debugName.empty())
+            heap.label = [NSString stringWithUTF8String:d.debugName.c_str()];
+
+        Heap* result = new Heap();
+        result->desc = d;
+        result->heap = heap;
+        return HeapHandle::Create(result);
     }
 
     TextureHandle Device::createTexture(const TextureDesc& d)
@@ -255,6 +313,16 @@ namespace nvrhi::metal
             descriptor.arrayLength = d.arraySize / 6;
         }
 
+        // A virtual texture defers its Metal object to bindTextureMemory, which places it
+        // on a heap at the offset the caller chose from the requirements below.
+        if (d.isVirtual)
+        {
+            Texture* result = new Texture();
+            result->desc = d;
+            result->descriptor = descriptor;
+            return TextureHandle::Create(result);
+        }
+
         id<MTLTexture> texture = [m_Context.device newTextureWithDescriptor:descriptor];
 
         if (!texture)
@@ -273,16 +341,47 @@ namespace nvrhi::metal
     {
         MemoryRequirements requirements;
         Texture* tex = checked_cast<Texture*>(texture);
-        if (tex)
+        if (tex && tex->texture)
+        {
             requirements.size = tex->texture.allocatedSize;
+        }
+        else if (tex && tex->descriptor)
+        {
+            const MTLSizeAndAlign sizeAndAlign = [m_Context.device heapTextureSizeAndAlignWithDescriptor:tex->descriptor];
+            requirements.size = sizeAndAlign.size;
+            requirements.alignment = sizeAndAlign.align;
+        }
 
         return requirements;
     }
 
-    bool Device::bindTextureMemory(ITexture* texture, IHeap* heap, uint64_t offset)
+    bool Device::bindTextureMemory(ITexture* _texture, IHeap* _heap, uint64_t offset)
     {
-        m_Context.error("bindTextureMemory: heaps are not supported by the Metal backend");
-        return false;
+        Texture* texture = checked_cast<Texture*>(_texture);
+        Heap* heap = checked_cast<Heap*>(_heap);
+        if (!texture || !texture->descriptor || !heap || !heap->heap)
+        {
+            m_Context.error("bindTextureMemory: the texture is not virtual or the heap is invalid");
+            return false;
+        }
+
+        // The storage modes have to match between the heap and the placed texture.
+        if (texture->descriptor.storageMode != heap->heap.storageMode)
+        {
+            m_Context.error("bindTextureMemory: the heap storage mode does not match the texture");
+            return false;
+        }
+
+        id<MTLTexture> placed = [heap->heap newTextureWithDescriptor:texture->descriptor offset:offset];
+        if (!placed)
+        {
+            m_Context.error("bindTextureMemory: failed to place the texture on the heap");
+            return false;
+        }
+
+        texture->texture = placed;
+        texture->descriptor = nil;
+        return true;
     }
 
     TextureHandle Device::createHandleForNativeTexture(ObjectType objectType, Object texture, const TextureDesc& desc)
@@ -603,9 +702,10 @@ namespace nvrhi::metal
 
     BindingLayoutHandle Device::createBindlessLayout(const BindlessLayoutDesc& desc)
     {
-        (void)desc;
-        m_Context.error("createBindlessLayout: bindless layouts are not supported by the Metal backend");
-        return nullptr;
+        BindingLayout* result = new BindingLayout();
+        result->bindlessDesc = desc;
+        result->isBindless = true;
+        return BindingLayoutHandle::Create(result);
     }
 
     BindingSetHandle Device::createBindingSet(const BindingSetDesc& desc, IBindingLayout* layout)
@@ -623,24 +723,112 @@ namespace nvrhi::metal
         return BindingSetHandle::Create(result);
     }
 
-    DescriptorTableHandle Device::createDescriptorTable(IBindingLayout* layout)
+    DescriptorTableHandle Device::createDescriptorTable(IBindingLayout* _layout)
     {
-        (void)layout;
-        m_Context.error("createDescriptorTable: descriptor tables are not supported by the Metal backend");
-        return nullptr;
+        const BindingLayout* layout = checked_cast<BindingLayout*>(_layout);
+        if (!layout || !layout->isBindless)
+        {
+            m_Context.error("createDescriptorTable: the layout is not a bindless layout");
+            return nullptr;
+        }
+
+        DescriptorTable* result = new DescriptorTable();
+        result->layout = _layout;
+        result->capacity = layout->bindlessDesc.maxCapacity;
+        result->slots.assign(layout->bindlessDesc.registerSpaces.size(),
+            std::vector<BindingSetItem>(result->capacity, BindingSetItem::None(0)));
+        return DescriptorTableHandle::Create(result);
     }
 
-    void Device::resizeDescriptorTable(IDescriptorTable* descriptorTable, uint32_t newSize, bool keepContents)
+    void Device::resizeDescriptorTable(IDescriptorTable* _descriptorTable, uint32_t newSize, bool keepContents)
     {
-        (void)descriptorTable;
-        (void)newSize;
-        (void)keepContents;
+        DescriptorTable* descriptorTable = checked_cast<DescriptorTable*>(_descriptorTable);
+        if (!descriptorTable || newSize > descriptorTable->capacity)
+            return;
+
+        for (auto& slots : descriptorTable->slots)
+        {
+            std::vector<BindingSetItem> resized(newSize, BindingSetItem::None(0));
+            if (keepContents)
+                std::copy(slots.begin(), slots.begin() + std::min(newSize, uint32_t(slots.size())), resized.begin());
+            slots = std::move(resized);
+        }
     }
 
-    bool Device::writeDescriptorTable(IDescriptorTable* descriptorTable, const BindingSetItem& item)
+    // Verifies that a permanently pinned resource accepts a descriptor table write of
+    // the given item's use, like the Vulkan backend does inside writeDescriptorTable.
+    static void verifyPermanentBindingState(const BindingSetItem& item, Context& context)
     {
-        (void)descriptorTable;
-        (void)item;
+        switch (item.type)
+        {
+            case ResourceType::Texture_SRV:
+            {
+                const auto texture = checked_cast<Texture*>(item.resourceHandle);
+                if (texture && texture->permanentState != ResourceStates::Unknown)
+                    verifyPermanentResourceState(texture->permanentState, ResourceStates::ShaderResource, true, texture->desc.debugName, context.messageCallback);
+            }
+            break;
+
+            case ResourceType::Texture_UAV:
+            {
+                const auto texture = checked_cast<Texture*>(item.resourceHandle);
+                if (texture && texture->permanentState != ResourceStates::Unknown)
+                    verifyPermanentResourceState(texture->permanentState, ResourceStates::UnorderedAccess, true, texture->desc.debugName, context.messageCallback);
+            }
+            break;
+
+            case ResourceType::StructuredBuffer_SRV:
+            case ResourceType::StructuredBuffer_UAV:
+            case ResourceType::RawBuffer_SRV:
+            case ResourceType::RawBuffer_UAV:
+            case ResourceType::TypedBuffer_SRV:
+            case ResourceType::TypedBuffer_UAV:
+            case ResourceType::ConstantBuffer:
+            case ResourceType::VolatileConstantBuffer:
+            {
+                const auto buffer = checked_cast<Buffer*>(item.resourceHandle);
+                if (buffer && buffer->permanentState != ResourceStates::Unknown)
+                {
+                    ResourceStates required = ResourceStates::ShaderResource;
+                    if (item.type == ResourceType::StructuredBuffer_UAV || item.type == ResourceType::RawBuffer_UAV || item.type == ResourceType::TypedBuffer_UAV)
+                        required = ResourceStates::UnorderedAccess;
+                    else if (item.type == ResourceType::ConstantBuffer || item.type == ResourceType::VolatileConstantBuffer)
+                        required = ResourceStates::ConstantBuffer;
+
+                    verifyPermanentResourceState(buffer->permanentState, required, false, buffer->desc.debugName, context.messageCallback);
+                }
+            }
+            break;
+
+            default:
+                break;
+        }
+    }
+
+    bool Device::writeDescriptorTable(IDescriptorTable* _descriptorTable, const BindingSetItem& item)
+    {
+        DescriptorTable* descriptorTable = checked_cast<DescriptorTable*>(_descriptorTable);
+        if (!descriptorTable || item.slot >= descriptorTable->capacity)
+            return false;
+
+        // The written type picks its register space; a table declares one array per space.
+        const BindingLayout* layout = checked_cast<BindingLayout*>(descriptorTable->layout.Get());
+        for (size_t space = 0; space < layout->bindlessDesc.registerSpaces.size(); ++space)
+        {
+            if (layout->bindlessDesc.registerSpaces[space].type != item.type)
+                continue;
+
+            if (item.type != ResourceType::None)
+                descriptorTable->slots[space][item.slot] = item;
+
+            // A slot written into a permanently pinned resource verifies the pin covers the
+            // written use, the check the Vulkan backend makes at the same place.
+            if (item.resourceHandle)
+                verifyPermanentBindingState(item, getContext());
+
+            return true;
+        }
+
         return false;
     }
 
@@ -660,6 +848,9 @@ namespace nvrhi::metal
         id<MTLCommandBuffer> commandBuffer = list->getCommandBuffer();
         if (!commandBuffer)
             return 0;
+
+        // Permanent states pinned by descriptor table writes apply at submission.
+        list->applyPermanentStates();
 
         uint64_t serial = 0;
         {
@@ -723,10 +914,25 @@ namespace nvrhi::metal
 
     bool Device::queryFeatureSupport(Feature feature, void* pInfo, size_t infoSize)
     {
-        (void)feature;
-        (void)pInfo;
-        (void)infoSize;
-        return false;
+        switch (feature)
+        {
+            case Feature::ConstantBufferRanges:
+                // A constant buffer range binds as the buffer with an offset, which Metal
+                // supports everywhere.
+                return true;
+
+            case Feature::ComputeQueue:
+            case Feature::CopyQueue:
+                // The Metal command queue executes graphics, compute and copy work alike.
+                return true;
+
+            case Feature::VirtualResources:
+                // A virtual texture defers its Metal object to bindTextureMemory on a heap.
+                return true;
+
+            default:
+                return false;
+        }
     }
 
     FormatSupport Device::queryFormatSupport(Format format)
@@ -741,6 +947,13 @@ namespace nvrhi::metal
 
         FormatSupport support = FormatSupport::Texture | FormatSupport::ShaderLoad | FormatSupport::Buffer;
         support = support | FormatSupport::ShaderUavLoad | FormatSupport::ShaderUavStore;
+
+        // Integer formats cannot sample through a filtering sampler; the rest can.
+        if (info.kind != FormatKind::Integer)
+            support = support | FormatSupport::ShaderSample;
+
+        support = support | FormatSupport::RenderTarget | FormatSupport::Blendable;
+
         return support;
     }
 

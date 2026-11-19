@@ -27,6 +27,7 @@
 #include <nvrhi/metal.h>
 #include <nvrhi/utils.h>
 
+#include "../common/state-tracking.h"
 #include "metal-spirv.h"
 
 #include <map>
@@ -79,9 +80,13 @@ namespace nvrhi::metal
         uint32_t index = 0;
     };
 
-    class Buffer : public RefCounter<IBuffer>
+    class Buffer : public RefCounter<IBuffer>, public BufferStateExtension
     {
     public:
+        Buffer()
+            : BufferStateExtension(desc)
+        { }
+
         BufferDesc desc;
         id<MTLBuffer> buffer = nil;
         void* mappedMemory = nullptr;
@@ -113,12 +118,19 @@ namespace nvrhi::metal
         const TextureDesc& getDesc() const override { return desc; }
     };
 
-    class Texture : public RefCounter<ITexture>
+    class Texture : public RefCounter<ITexture>, public TextureStateExtension
     {
     public:
+        Texture()
+            : TextureStateExtension(desc)
+        { }
+
         TextureDesc desc;
         id<MTLTexture> texture = nil;
         bool isCPUVisible = false;
+
+        // A virtual texture keeps its descriptor until bindTextureMemory places it on a heap.
+        MTLTextureDescriptor* descriptor = nil;
 
         // [UAA] Subresource views, keyed by the range, dimension, format and channel mapping
         // of the binding that asked for them and reused like the views of a Vulkan texture.
@@ -161,6 +173,16 @@ namespace nvrhi::metal
         Object getNativeObject(ObjectType objectType) override;
     };
 
+    class Heap : public RefCounter<IHeap>
+    {
+    public:
+        HeapDesc desc;
+        id<MTLHeap> heap = nil;
+
+        const HeapDesc& getDesc() override { return desc; }
+        Object getNativeObject(ObjectType objectType) override;
+    };
+
     class Shader : public RefCounter<IShader>
     {
     public:
@@ -170,9 +192,25 @@ namespace nvrhi::metal
         std::string source;
         TranslatedShader translated;
 
+        // The original SPIR-V words and, for a bindless shader, one translation per
+        // descriptor table capacity. The runtime sized arrays are sized by the table,
+        // so the function cannot be compiled before the capacity is known.
+        struct BindlessTranslation
+        {
+            TranslatedShader translated;
+            id<MTLFunction> function = nil;
+        };
+        std::vector<uint32_t> spirv;
+        mutable std::map<uint32_t, BindlessTranslation> bindlessTranslations;
+
         const ShaderDesc& getDesc() const override { return desc; }
         void getBytecode(const void** ppBytecode, size_t* pSize) const override;
         Object getNativeObject(ObjectType objectType) override;
+
+        // [UAA] Returns the translation and compiled function for the given table
+        // capacity, translating and compiling on first use. Returns the eager
+        // translation for a shader without runtime sized arrays.
+        const BindlessTranslation* getTranslationForCapacity(Context& context, uint32_t capacity) const;
     };
 
     class InputLayout : public RefCounter<IInputLayout>
@@ -199,9 +237,11 @@ namespace nvrhi::metal
     {
     public:
         BindingLayoutDesc desc;
+        BindlessLayoutDesc bindlessDesc;
+        bool isBindless = false;
 
-        const BindingLayoutDesc* getDesc() const override { return &desc; }
-        const BindlessLayoutDesc* getBindlessDesc() const override { return nullptr; }
+        const BindingLayoutDesc* getDesc() const override { return isBindless ? nullptr : &desc; }
+        const BindlessLayoutDesc* getBindlessDesc() const override { return isBindless ? &bindlessDesc : nullptr; }
     };
 
     class BindingSet : public RefCounter<IBindingSet>
@@ -214,6 +254,25 @@ namespace nvrhi::metal
 
         const BindingSetDesc* getDesc() const override { return &desc; }
         IBindingLayout* getLayout() const override { return layout; }
+    };
+
+    // A bindless descriptor table. The classic Metal binding path has no argument
+    // buffers, so the table keeps the written items and the command list binds them
+    // one array element at a time.
+    class DescriptorTable : public RefCounter<IDescriptorTable>
+    {
+    public:
+        BindingLayoutHandle layout;
+        uint32_t capacity = 0;
+        // One slot array per register space of the layout, like the bindings of a
+        // Vulkan descriptor set that each take their own array elements.
+        std::vector<std::vector<BindingSetItem>> slots;
+
+        const BindingSetDesc* getDesc() const override { return nullptr; }
+        IBindingLayout* getLayout() const override { return layout; }
+        uint32_t getCapacity() const override { return capacity; }
+        uint32_t getFirstDescriptorIndexInHeap() const override { return 0; }
+        Object getNativeObject(ObjectType objectType) override;
     };
 
     // The resources a pipeline reads, resolved from the shaders' translated binding plans.
@@ -230,12 +289,27 @@ namespace nvrhi::metal
 
         std::vector<Entry> entries;
 
+        // The runtime sized arrays of the bindless descriptor set, one per resource
+        // direction, sized to the table capacity by the translation.
+        std::vector<ResourceBinding> bindlessArrays;
+
         const Entry* find(ShaderType stage, uint32_t descriptorSet, uint32_t slot) const
         {
             for (const auto& entry : entries)
             {
                 if (entry.stage == stage && entry.descriptorSet == descriptorSet && entry.slot == slot)
                     return &entry;
+            }
+
+            return nullptr;
+        }
+
+        const ResourceBinding* findBindlessArray(ResourceKind kind, bool writeable) const
+        {
+            for (const auto& array : bindlessArrays)
+            {
+                if (array.kind == kind && array.writeable == writeable)
+                    return &array;
             }
 
             return nullptr;
@@ -351,6 +425,9 @@ namespace nvrhi::metal
         void setAccelStructState(rt::IAccelStruct* as, ResourceStates stateBits) override;
         void setPermanentTextureState(ITexture* texture, ResourceStates stateBits) override;
         void setPermanentBufferState(IBuffer* buffer, ResourceStates stateBits) override;
+        void applyPermanentStates();
+        void verifyPermanentState(TextureStateExtension* texture, ResourceStates state);
+        void verifyPermanentState(BufferStateExtension* buffer, ResourceStates state);
         void commitBarriers() override;
         ResourceStates getTextureSubresourceState(ITexture* texture, ArraySlice arraySlice, MipLevel mipLevel) override;
         ResourceStates getBufferState(IBuffer* buffer) override;
@@ -373,6 +450,7 @@ namespace nvrhi::metal
         void bindGraphicsResources(const GraphicsState& state);
         void bindResource(const BoundResource& bound, const nvrhi::BindingSetItem& item);
         void bindGraphicsResource(const BoundResource& bound, const nvrhi::BindingSetItem& item, bool vertexStage);
+        void bindDescriptorTable(DescriptorTable* table, const PipelineBindingPlan& plan);
         void bindPushConstants(uint32_t bufferIndex, uint32_t size, ShaderType stage);
         void clearTexture(Texture* texture, const TextureSubresourceSet& subresources, const Color& color, uint32_t intValue, bool integer);
 
@@ -393,6 +471,11 @@ namespace nvrhi::metal
         // re-apply the state when the next dispatch or draw opens a new one.
         ComputeState m_CurrentComputeState;
         GraphicsState m_CurrentGraphicsState;
+
+        // Permanent resource states pinned by descriptor table writes, applied when the
+        // list is submitted like the Vulkan backend applies them.
+        std::vector<std::pair<TextureStateExtension*, ResourceStates>> m_PermanentTextureStates;
+        std::vector<std::pair<BufferStateExtension*, ResourceStates>> m_PermanentBufferStates;
 
         std::vector<uint8_t> m_PushConstants;
 
@@ -486,6 +569,10 @@ namespace nvrhi::metal
         // metal::IDevice implementation
         Object getNativeDevice() override;
         Object getNativeCommandQueue() override;
+
+        // [UAA] adapter memory size
+        uint64_t getNativeDeviceMemorySize() override;
+        uint64_t getNativeAllocatedSize() override;
 
         // [UAA] - START - mapped buffer write flush
         uint64_t getMappedBufferFlushAlignment() override;

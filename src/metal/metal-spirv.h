@@ -38,11 +38,14 @@ namespace nvrhi::metal
 
     // A shader-visible resource: the SPIR-V descriptor set and binding identify it,
     // the index is the slot it takes in the Metal buffer, texture or sampler namespace.
+    // A writeable resource is a storage buffer or storage image.
     struct ResourceBinding
     {
         uint32_t descriptorSet = 0;
         uint32_t binding = 0;
         ResourceKind kind = ResourceKind::Buffer;
+        bool writeable = false;
+        bool runtimeArray = false;
         uint32_t index = 0;
         uint32_t count = 1;
     };
@@ -51,15 +54,21 @@ namespace nvrhi::metal
     {
         std::string source;
         std::vector<ResourceBinding> resources;
-
+        ShaderType stage = ShaderType::None;
         uint32_t threadGroupSize[3] = { 1, 1, 1 };
 
         bool usesPushConstants = false;
         uint32_t pushConstantBufferIndex = 0;
+
+        // A runtime sized descriptor array cannot be sized until the descriptor table
+        // capacity is known, so such a shader keeps its function deferred to the pipeline.
+        bool usesBindless = false;
     };
 
     // Translates a SPIR-V module to MSL. The resources are given explicit Metal indices
     // so that the command list can bind them without parsing the generated source.
+    // The runtime sized arrays of the bindless descriptor set are sized to the table
+    // capacity; a capacity of zero only reports whether the module uses them.
     bool translateSpirvToMSL(
         const void* spirv,
         size_t size,
@@ -67,6 +76,8 @@ namespace nvrhi::metal
         const std::string& entryName,
         uint32_t mslVersionMajor,
         uint32_t mslVersionMinor,
+        uint32_t bindlessSet,
+        uint32_t bindlessCapacity,
         TranslatedShader& out,
         std::string& error);
 }
