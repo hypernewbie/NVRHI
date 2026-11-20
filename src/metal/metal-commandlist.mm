@@ -144,7 +144,8 @@ namespace nvrhi::metal
         {
             [m_RenderEncoder endEncoding];
             m_RenderEncoder = nil;
-            m_RenderEncoderFramebuffer = nullptr;
+            // The framebuffer stays, because the pass is reopened with it when the
+            // next draw needs a render encoder.
         }
 
         if (m_BlitEncoder)
@@ -765,7 +766,13 @@ namespace nvrhi::metal
         if (framebuffer->desc.depthAttachment.texture)
             [encoder setDepthStencilState:pso->depthStencilState];
 
-        [encoder setStencilReferenceValue:state.dynamicStencilRefValue];
+        // Metal sets the stencil reference value on the encoder. The pipeline holds the
+        // static value, and the state overrides it when the pipeline uses a dynamic one.
+        const DepthStencilState& depthStencilState = pso->desc.renderState.depthStencilState;
+        const uint32_t stencilRefValue = depthStencilState.dynamicStencilRef
+            ? state.dynamicStencilRefValue
+            : depthStencilState.stencilRefValue;
+        [encoder setStencilReferenceValue:stencilRefValue];
 
         [encoder setBlendColorRed:state.blendConstantColor.r green:state.blendConstantColor.g blue:state.blendConstantColor.b alpha:state.blendConstantColor.a];
 
@@ -860,6 +867,10 @@ namespace nvrhi::metal
             if (!array)
                 continue;
 
+            // A shader array argument must be bound completely, so the unwritten slots
+            // of the array are tracked and filled with null resources afterwards.
+            std::vector<bool> written(array->count, false);
+
             for (const auto& item : table->slots[space])
             {
                 if (item.type == ResourceType::None || !item.resourceHandle)
@@ -871,11 +882,61 @@ namespace nvrhi::metal
                 BoundResource bound;
                 bound.kind = array->kind;
                 bound.index = array->index + item.slot;
+                written[item.slot] = true;
 
                 bindResource(bound, item);
                 bindGraphicsResource(bound, item, true);
                 bindGraphicsResource(bound, item, false);
             }
+
+            for (uint32_t slot = 0; slot < array->count; ++slot)
+            {
+                if (!written[slot])
+                    bindNullResource(array->kind, array->index + slot, array->bufferArray, array->format);
+            }
+        }
+    }
+
+    void CommandList::bindNullResource(ResourceKind kind, uint32_t index, bool bufferArray, Format format)
+    {
+        switch (kind)
+        {
+        case ResourceKind::Buffer:
+            if (m_ComputeEncoder)
+                [m_ComputeEncoder setBuffer:m_Device->getNullBuffer() offset:0 atIndex:index];
+            if (m_RenderEncoder)
+            {
+                [m_RenderEncoder setVertexBuffer:m_Device->getNullBuffer() offset:0 atIndex:index];
+                [m_RenderEncoder setFragmentBuffer:m_Device->getNullBuffer() offset:0 atIndex:index];
+            }
+            break;
+        case ResourceKind::Texture:
+        {
+            // A typed buffer array holds texture buffers, so its null resource is one.
+            id<MTLTexture> nullTexture = bufferArray
+                ? m_Device->getNullTextureBuffer(format)
+                : m_Device->getNullTexture();
+            if (!nullTexture)
+                return;
+
+            if (m_ComputeEncoder)
+                [m_ComputeEncoder setTexture:nullTexture atIndex:index];
+            if (m_RenderEncoder)
+            {
+                [m_RenderEncoder setVertexTexture:nullTexture atIndex:index];
+                [m_RenderEncoder setFragmentTexture:nullTexture atIndex:index];
+            }
+            break;
+        }
+        case ResourceKind::Sampler:
+            if (m_ComputeEncoder)
+                [m_ComputeEncoder setSamplerState:m_Device->getNullSampler() atIndex:index];
+            if (m_RenderEncoder)
+            {
+                [m_RenderEncoder setVertexSamplerState:m_Device->getNullSampler() atIndex:index];
+                [m_RenderEncoder setFragmentSamplerState:m_Device->getNullSampler() atIndex:index];
+            }
+            break;
         }
     }
 
@@ -1003,8 +1064,12 @@ namespace nvrhi::metal
 
         const MTLIndexType indexType = m_IndexBuffer.format == Format::R32_UINT ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
 
+        // The start index location counts the indices, so it is added to the buffer offset.
+        const uint64_t indexSize = indexType == MTLIndexTypeUInt32 ? 4 : 2;
+
         [m_RenderEncoder drawIndexedPrimitives:m_CurrentGraphicsPipeline->primitiveType
-            indexCount:args.vertexCount indexType:indexType indexBuffer:indexBuffer->buffer indexBufferOffset:m_IndexBuffer.offset
+            indexCount:args.vertexCount indexType:indexType indexBuffer:indexBuffer->buffer
+            indexBufferOffset:m_IndexBuffer.offset + args.startIndexLocation * indexSize
             instanceCount:args.instanceCount baseVertex:args.startVertexLocation baseInstance:args.startInstanceLocation];
     }
 
@@ -1015,6 +1080,11 @@ namespace nvrhi::metal
 
         if (!m_RenderEncoder && !reopenRenderEncoder())
             return;
+
+        if (m_CurrentGraphicsPipeline->vertexPushConstants)
+            bindPushConstants(m_CurrentGraphicsPipeline->pushConstantBufferIndex, m_CurrentGraphicsPipeline->pushConstantSize, ShaderType::Vertex);
+        if (m_CurrentGraphicsPipeline->pixelPushConstants)
+            bindPushConstants(m_CurrentGraphicsPipeline->pushConstantBufferIndex, m_CurrentGraphicsPipeline->pushConstantSize, ShaderType::Pixel);
 
         for (uint32_t draw = 0; draw < drawCount; ++draw)
         {
@@ -1031,6 +1101,11 @@ namespace nvrhi::metal
         if (!m_RenderEncoder && !reopenRenderEncoder())
             return;
 
+        if (m_CurrentGraphicsPipeline->vertexPushConstants)
+            bindPushConstants(m_CurrentGraphicsPipeline->pushConstantBufferIndex, m_CurrentGraphicsPipeline->pushConstantSize, ShaderType::Vertex);
+        if (m_CurrentGraphicsPipeline->pixelPushConstants)
+            bindPushConstants(m_CurrentGraphicsPipeline->pushConstantBufferIndex, m_CurrentGraphicsPipeline->pushConstantSize, ShaderType::Pixel);
+
         const Buffer* indexBuffer = checked_cast<Buffer*>(m_IndexBuffer.buffer);
         const MTLIndexType indexType = m_IndexBuffer.format == Format::R32_UINT ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
 
@@ -1042,11 +1117,74 @@ namespace nvrhi::metal
         }
     }
 
+    id<MTLBuffer> CommandList::expandIndirectDrawArgs(uint32_t paramOffsetBytes, uint32_t countOffsetBytes, uint32_t maxDrawCount)
+    {
+        const Buffer* countBuffer = checked_cast<Buffer*>(m_CurrentGraphicsState.indirectCountBuffer);
+        if (!countBuffer || !countBuffer->buffer || !m_IndirectBuffer || !m_IndirectBuffer->buffer)
+            return nil;
+
+        id<MTLComputePipelineState> pipeline = m_Device->getIndirectCountPipeline();
+        if (!pipeline)
+            return nil;
+
+        // The arguments of the counted draws are expanded into a scratch buffer, and
+        // the commands that the count excludes are zeroed. Every counted draw gets its
+        // own buffers, so a draw that is still running is not overwritten.
+        id<MTLBuffer> argsBuffer = [m_Device->getContext().device newBufferWithLength:maxDrawCount * 20
+            options:MTLResourceStorageModePrivate];
+        id<MTLBuffer> paramsBuffer = [m_Device->getContext().device newBufferWithLength:16
+            options:MTLResourceStorageModeShared];
+        if (!argsBuffer || !paramsBuffer)
+            return nil;
+
+        const uint32_t offsets[3] = { paramOffsetBytes, countOffsetBytes, maxDrawCount };
+        std::memcpy(paramsBuffer.contents, offsets, sizeof(offsets));
+
+        id<MTLComputeCommandEncoder> encoder = getComputeEncoder();
+        if (!encoder)
+            return nil;
+
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:m_IndirectBuffer->buffer offset:0 atIndex:0];
+        [encoder setBuffer:countBuffer->buffer offset:0 atIndex:1];
+        [encoder setBuffer:argsBuffer offset:0 atIndex:2];
+        [encoder setBuffer:paramsBuffer offset:0 atIndex:3];
+        [encoder dispatchThreads:MTLSizeMake(maxDrawCount, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        m_ComputeEncoder = nil;
+
+        return argsBuffer;
+    }
+
     void CommandList::drawIndexedIndirectCount(uint32_t paramOffsetBytes, uint32_t countOffsetBytes, uint32_t maxDrawCount)
     {
-        (void)paramOffsetBytes;
-        (void)countOffsetBytes;
-        (void)maxDrawCount;
+        if (!m_CurrentGraphicsPipeline || !m_IndexBuffer.buffer || !m_IndirectBuffer || maxDrawCount == 0)
+            return;
+
+        // Metal has no counted indirect draw, so the arguments are expanded on the GPU.
+        // The helper kernel needs its own encoder, so it runs before the render encoder
+        // is opened and the state is applied.
+        id<MTLBuffer> argsBuffer = expandIndirectDrawArgs(paramOffsetBytes, countOffsetBytes, maxDrawCount);
+        if (!argsBuffer)
+            return;
+
+        if (!m_RenderEncoder && !reopenRenderEncoder())
+            return;
+
+        if (m_CurrentGraphicsPipeline->vertexPushConstants)
+            bindPushConstants(m_CurrentGraphicsPipeline->pushConstantBufferIndex, m_CurrentGraphicsPipeline->pushConstantSize, ShaderType::Vertex);
+        if (m_CurrentGraphicsPipeline->pixelPushConstants)
+            bindPushConstants(m_CurrentGraphicsPipeline->pushConstantBufferIndex, m_CurrentGraphicsPipeline->pushConstantSize, ShaderType::Pixel);
+
+        const Buffer* indexBuffer = checked_cast<Buffer*>(m_IndexBuffer.buffer);
+        const MTLIndexType indexType = m_IndexBuffer.format == Format::R32_UINT ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
+
+        for (uint32_t draw = 0; draw < maxDrawCount; ++draw)
+        {
+            [m_RenderEncoder drawIndexedPrimitives:m_CurrentGraphicsPipeline->primitiveType
+                indexType:indexType indexBuffer:indexBuffer->buffer indexBufferOffset:m_IndexBuffer.offset
+                indirectBuffer:argsBuffer indirectBufferOffset:draw * 20];
+        }
     }
 
     void CommandList::setPushConstants(const void* data, size_t byteSize)

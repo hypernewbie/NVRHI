@@ -40,7 +40,32 @@ namespace nvrhi::metal
             bool runtimeArray = false;
             uint32_t index = 0;
             uint32_t count = 1;
+            bool bufferArray = false;
+            Format format = Format::UNKNOWN;
         };
+
+        // The format of the elements of a texture array, which is the format of the
+        // texture buffer views of a typed buffer array.
+        Format getTextureFormat(spirv_cross::CompilerMSL& compiler, uint32_t id)
+        {
+            const spirv_cross::SPIRType& variableType = compiler.get_type_from_variable(id);
+
+            const spirv_cross::SPIRType* elementType = &variableType;
+            if (!variableType.array.empty())
+                elementType = &compiler.get_type(variableType.self);
+
+            switch (elementType->image.format)
+            {
+            case spv::ImageFormatRgba32f:    return Format::RGBA32_FLOAT;
+            case spv::ImageFormatR32f:       return Format::R32_FLOAT;
+            case spv::ImageFormatRgba16f:    return Format::RGBA16_FLOAT;
+            case spv::ImageFormatR32ui:      return Format::R32_UINT;
+            case spv::ImageFormatR32i:       return Format::R32_SINT;
+            case spv::ImageFormatRgba8:      return Format::RGBA8_UNORM;
+            case spv::ImageFormatRgba8Snorm: return Format::RGBA8_UNORM;
+            default:                        return Format::UNKNOWN;
+            }
+        }
 
         bool toExecutionModel(ShaderType stage, spv::ExecutionModel& out)
         {
@@ -108,7 +133,12 @@ namespace nvrhi::metal
 
             compiler.set_msl_options(options);
 
-            const spirv_cross::ShaderResources resources = compiler.get_shader_resources();
+            // Only the resources the entry point uses are translated. A module with
+            // several entry points can declare the same descriptor set and binding
+            // once per entry point, and those duplicates must not take indices.
+            std::unordered_set<spirv_cross::VariableID> active = compiler.get_active_interface_variables();
+            compiler.set_enabled_interface_variables(active);
+            const spirv_cross::ShaderResources resources = compiler.get_shader_resources(active);
 
             std::vector<ResourceEntry> entries;
 
@@ -123,6 +153,19 @@ namespace nvrhi::metal
                     entry.kind = kind;
                     entry.writeable = writeable;
                     entry.count = getResourceCount(compiler, resource.id);
+
+                    if (kind == ResourceKind::Texture)
+                    {
+                        const spirv_cross::SPIRType& variableType = compiler.get_type_from_variable(resource.id);
+                        const spirv_cross::SPIRType* elementType = &variableType;
+                        if (!variableType.array.empty())
+                            elementType = &compiler.get_type(variableType.self);
+
+                        // A texture buffer holds the typed buffer views of NVRHI.
+                        entry.bufferArray = elementType->image.dim == spv::DimBuffer;
+                        entry.format = getTextureFormat(compiler, resource.id);
+                    }
+
                     entries.push_back(entry);
                 }
             };
@@ -134,9 +177,12 @@ namespace nvrhi::metal
             collect(resources.separate_samplers, ResourceKind::Sampler, false);
 
             // Distinguish read-only storage buffers from UAVs when matching table slots.
+            // Slang decorates the variable, DXC decorates the block members.
             for (auto& entry : entries)
             {
-                if (entry.kind == ResourceKind::Buffer && compiler.get_decoration(entry.id, spv::DecorationNonWritable))
+                if (entry.kind == ResourceKind::Buffer
+                    && (compiler.get_decoration(entry.id, spv::DecorationNonWritable)
+                        || compiler.get_buffer_block_flags(entry.id).get(spv::DecorationNonWritable)))
                     entry.writeable = false;
             }
 
@@ -251,6 +297,8 @@ namespace nvrhi::metal
                 resource.runtimeArray = entry.runtimeArray;
                 resource.index = entry.index;
                 resource.count = entry.count;
+                resource.bufferArray = entry.bufferArray;
+                resource.format = entry.format;
                 out.resources.push_back(resource);
             }
 

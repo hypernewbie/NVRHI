@@ -445,7 +445,9 @@ namespace nvrhi::metal
         void bindResource(const BoundResource& bound, const nvrhi::BindingSetItem& item);
         void bindGraphicsResource(const BoundResource& bound, const nvrhi::BindingSetItem& item, bool vertexStage);
         void bindDescriptorTable(DescriptorTable* table, const PipelineBindingPlan& plan);
+        void bindNullResource(ResourceKind kind, uint32_t index, bool bufferArray, Format format);
         void bindPushConstants(uint32_t bufferIndex, uint32_t size, ShaderType stage);
+        id<MTLBuffer> expandIndirectDrawArgs(uint32_t paramOffsetBytes, uint32_t countOffsetBytes, uint32_t maxDrawCount);
         void clearTexture(Texture* texture, const TextureSubresourceSet& subresources, const Color& color, uint32_t intValue, bool integer);
 
         Device* m_Device;
@@ -485,6 +487,18 @@ namespace nvrhi::metal
         Context& getContext() { return m_Context; }
         id<MTLCommandQueue> getQueue() const { return m_Context.queue; }
         uint64_t submitCommandList(ICommandList* commandList);
+
+        // Null resources bound to the unwritten slots of a shader array argument.
+        id<MTLBuffer> getNullBuffer();
+        id<MTLTexture> getNullTexture();
+        id<MTLTexture> getNullTextureBuffer(Format format);
+        id<MTLSamplerState> getNullSampler();
+
+        // A queue wait the GPU performs before the queue's next submission.
+        void commitQueueWaits(CommandQueue executionQueue);
+
+        // The pipeline that expands the indirect draw arguments for a counted draw.
+        id<MTLComputePipelineState> getIndirectCountPipeline();
 
         // IResource implementation
         Object getNativeObject(ObjectType objectType) override;
@@ -571,6 +585,17 @@ namespace nvrhi::metal
 
     private:
         Context m_Context;
+        id<MTLBuffer> m_NullBuffer = nil;
+        id<MTLTexture> m_NullTexture = nil;
+        // The null texture buffers, one per element format.
+        std::map<Format, id<MTLTexture>> m_NullTextureBuffers;
+        id<MTLSamplerState> m_NullSampler = nil;
+        // The submissions signal this event with their serial, and the queue waits of
+        // queueWaitForCommandList wait on it before the next submission of the queue.
+        id<MTLSharedEvent> m_SubmissionEvent = nil;
+        id<MTLComputePipelineState> m_IndirectCountPipeline = nil;
+        uint64_t m_PendingQueueWaits[3] = { 0, 0, 0 };
+        std::mutex m_QueueWaitMutex;
         std::mutex m_Mutex;
         uint64_t m_LastSubmittedSerial = 0;
         uint64_t m_LastCompletedSerial = 0;

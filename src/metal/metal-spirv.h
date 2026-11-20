@@ -48,6 +48,11 @@ namespace nvrhi::metal
         bool runtimeArray = false;
         uint32_t index = 0;
         uint32_t count = 1;
+        // A texture array of texture buffers holds the typed buffer views of NVRHI,
+        // so it needs a different null resource than an array of sampled textures.
+        bool bufferArray = false;
+        // The format of the texture elements, which is the format of a null texture buffer.
+        Format format = Format::UNKNOWN;
     };
 
     struct TranslatedShader

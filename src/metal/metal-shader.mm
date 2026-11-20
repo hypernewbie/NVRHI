@@ -175,7 +175,10 @@ namespace nvrhi::metal
     {
         const TextureSubresourceSet resolved = subresources.resolve(desc, true);
         const Format viewFormat = format == Format::UNKNOWN ? desc.format : format;
-        const ComponentMapping viewMapping = componentMapping.isIdentity() ? desc.defaultComponentMapping : componentMapping;
+
+        // The mapping is already resolved, so an identity override keeps the identity
+        // instead of falling back to the default mapping of the texture.
+        const ComponentMapping viewMapping = componentMapping;
 
         if (subresources.isEntireTexture(desc) && viewFormat == desc.format && viewMapping.isIdentity())
             return texture;
@@ -610,8 +613,13 @@ namespace nvrhi::metal
 
     GraphicsPipelineHandle Device::createGraphicsPipeline(const GraphicsPipelineDesc& desc, IFramebuffer* fb)
     {
-        (void)desc;
-        (void)fb;
-        return nullptr;
+        const Framebuffer* framebuffer = checked_cast<Framebuffer*>(fb);
+        if (!framebuffer)
+        {
+            m_Context.error("createGraphicsPipeline: the framebuffer is missing");
+            return nullptr;
+        }
+
+        return createGraphicsPipeline(desc, framebuffer->getFramebufferInfo());
     }
 }

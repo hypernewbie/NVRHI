@@ -475,15 +475,77 @@ namespace nvrhi::validation
         return m_Device->createBuffer(patchedDesc);
     }
 
+    // [UAA] - START - buffer mapping checks
     void * DeviceWrapper::mapBuffer(IBuffer* b, CpuAccessMode mapFlags)
     {
-        return m_Device->mapBuffer(b, mapFlags);
+        if (b == nullptr)
+        {
+            error("mapBuffer: buffer is NULL");
+            return nullptr;
+        }
+
+        const BufferDesc& desc = b->getDesc();
+
+        if (mapFlags == CpuAccessMode::None)
+        {
+            error("mapBuffer: the access mode is None");
+            return nullptr;
+        }
+
+        if (desc.cpuAccess == CpuAccessMode::None)
+        {
+            std::stringstream ss;
+            ss << "mapBuffer: buffer " << utils::DebugNameToString(desc.debugName)
+                << " has no CPU access, so it cannot be mapped.";
+            error(ss.str());
+            return nullptr;
+        }
+
+        if (desc.cpuAccess != mapFlags)
+        {
+            std::stringstream ss;
+            ss << "mapBuffer: buffer " << utils::DebugNameToString(desc.debugName)
+                << " was created with a different CPU access mode than the map request.";
+            error(ss.str());
+            return nullptr;
+        }
+
+        if (m_MappedBuffers.find(b) != m_MappedBuffers.end())
+        {
+            std::stringstream ss;
+            ss << "mapBuffer: buffer " << utils::DebugNameToString(desc.debugName)
+                << " is already mapped.";
+            error(ss.str());
+            return nullptr;
+        }
+
+        void* result = m_Device->mapBuffer(b, mapFlags);
+        if (result)
+            m_MappedBuffers.insert(b);
+
+        return result;
     }
 
     void DeviceWrapper::unmapBuffer(IBuffer* b)
     {
+        if (b == nullptr)
+        {
+            error("unmapBuffer: buffer is NULL");
+            return;
+        }
+
+        if (m_MappedBuffers.erase(b) == 0)
+        {
+            std::stringstream ss;
+            ss << "unmapBuffer: buffer " << utils::DebugNameToString(b->getDesc().debugName)
+                << " is not mapped.";
+            error(ss.str());
+            return;
+        }
+
         m_Device->unmapBuffer(b);
     }
+    // [UAA] - END
 
     MemoryRequirements DeviceWrapper::getBufferMemoryRequirements(IBuffer* buffer)
     {

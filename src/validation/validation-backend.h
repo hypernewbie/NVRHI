@@ -295,6 +295,10 @@ namespace nvrhi::validation
         DeviceHandle m_Device;
         IMessageCallback* m_MessageCallback;
         std::atomic<unsigned int> m_NumOpenImmediateCommandLists = 0;
+        // [UAA] - START - mapped buffer tracking
+        // The buffers that are mapped, so a second map of the same buffer is rejected.
+        std::unordered_set<IBuffer*> m_MappedBuffers;
+        // [UAA] - END
 
         void error(const std::string& messageText) const;
         void warning(const std::string& messageText) const;

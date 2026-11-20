@@ -59,7 +59,8 @@ namespace nvrhi::metal
             return nil;
         }
 
-        if (byteSize == 0)
+        // EntireBuffer is either a zero size or the full-range sentinel.
+        if (byteSize == 0 || byteSize == ~0ull)
             byteSize = buffer->desc.byteSize - byteOffset;
 
         const auto key = std::make_tuple(viewFormat, byteOffset, byteSize);
@@ -116,6 +117,9 @@ namespace nvrhi::metal
             m_Context.error("createDevice: no Metal command queue is available");
             return;
         }
+
+        m_SubmissionEvent = [m_Context.device newSharedEvent];
+        m_SubmissionEvent.signaledValue = 0;
     }
 
     Device::~Device()
@@ -367,6 +371,16 @@ namespace nvrhi::metal
             return false;
         }
 
+        // Metal only validates the placement with the debug layer, so the offset and
+        // the end of the resource are checked against the heap explicitly. The
+        // requested capacity is used, because Metal rounds the heap size up.
+        const MTLSizeAndAlign sizeAndAlign = [m_Context.device heapTextureSizeAndAlignWithDescriptor:texture->descriptor];
+        if ((offset % sizeAndAlign.align) != 0 || offset + sizeAndAlign.size > heap->desc.capacity)
+        {
+            m_Context.error("bindTextureMemory: the offset does not place the texture inside the heap");
+            return false;
+        }
+
         id<MTLTexture> placed = [heap->heap newTextureWithDescriptor:texture->descriptor offset:offset];
         if (!placed)
         {
@@ -494,6 +508,14 @@ namespace nvrhi::metal
             return nullptr;
         }
 
+        // Create the Metal buffer when bindBufferMemory supplies a heap and offset.
+        if (d.isVirtual)
+        {
+            Buffer* result = new Buffer();
+            result->desc = d;
+            return BufferHandle::Create(result);
+        }
+
         // Apple silicon has unified memory, so shared storage keeps the buffer host visible
         // and coherent for both the CPU and the GPU.
         id<MTLBuffer> buffer = [m_Context.device newBufferWithLength:d.byteSize options:MTLResourceStorageModeShared];
@@ -533,20 +555,58 @@ namespace nvrhi::metal
         Buffer* buf = checked_cast<Buffer*>(buffer);
         if (buf)
         {
-            requirements.size = buf->desc.byteSize;
-            requirements.alignment = 256;
+            if (buf->desc.isVirtual && !buf->buffer)
+            {
+                const MTLSizeAndAlign sizeAndAlign = [m_Context.device heapBufferSizeAndAlignWithLength:buf->desc.byteSize
+                    options:MTLResourceStorageModePrivate];
+                requirements.size = sizeAndAlign.size;
+                requirements.alignment = sizeAndAlign.align;
+            }
+            else
+            {
+                requirements.size = buf->desc.byteSize;
+                requirements.alignment = 256;
+            }
         }
 
         return requirements;
     }
 
-    bool Device::bindBufferMemory(IBuffer* buffer, IHeap* heap, uint64_t offset)
+    bool Device::bindBufferMemory(IBuffer* _buffer, IHeap* _heap, uint64_t offset)
     {
-        (void)buffer;
-        (void)heap;
-        (void)offset;
-        m_Context.error("bindBufferMemory: heaps are not supported by the Metal backend");
-        return false;
+        Buffer* buffer = checked_cast<Buffer*>(_buffer);
+        Heap* heap = checked_cast<Heap*>(_heap);
+        if (!buffer || !buffer->desc.isVirtual || buffer->buffer || !heap || !heap->heap)
+        {
+            m_Context.error("bindBufferMemory: the buffer is not virtual or the heap is invalid");
+            return false;
+        }
+
+        // The storage mode has to match between the heap and the placed buffer.
+        MTLResourceOptions options = MTLResourceStorageModePrivate;
+        if (heap->heap.storageMode == MTLStorageModeShared)
+            options = MTLResourceStorageModeShared;
+
+        // Metal only validates the placement with the debug layer, so the offset and
+        // the end of the resource are checked against the heap explicitly. The
+        // requested capacity is used, because Metal rounds the heap size up.
+        const MTLSizeAndAlign sizeAndAlign = [m_Context.device heapBufferSizeAndAlignWithLength:buffer->desc.byteSize options:options];
+        if ((offset % sizeAndAlign.align) != 0 || offset + sizeAndAlign.size > heap->desc.capacity)
+        {
+            m_Context.error("bindBufferMemory: the offset does not place the buffer inside the heap");
+            return false;
+        }
+
+        id<MTLBuffer> placed = [heap->heap newBufferWithLength:buffer->desc.byteSize options:options offset:offset];
+        if (!placed)
+        {
+            m_Context.error("bindBufferMemory: failed to place the buffer on the heap");
+            return false;
+        }
+
+        buffer->buffer = placed;
+        buffer->isCPUVisible = options == MTLResourceStorageModeShared;
+        return true;
     }
 
     BufferHandle Device::createHandleForNativeBuffer(ObjectType objectType, Object buffer, const BufferDesc& desc)
@@ -736,7 +796,11 @@ namespace nvrhi::metal
     void Device::resizeDescriptorTable(IDescriptorTable* _descriptorTable, uint32_t newSize, bool keepContents)
     {
         DescriptorTable* descriptorTable = checked_cast<DescriptorTable*>(_descriptorTable);
-        if (!descriptorTable || newSize > descriptorTable->capacity)
+        if (!descriptorTable)
+            return;
+
+        const BindingLayout* layout = checked_cast<BindingLayout*>(descriptorTable->layout.Get());
+        if (!layout || newSize > layout->bindlessDesc.maxCapacity)
             return;
 
         for (auto& slots : descriptorTable->slots)
@@ -746,6 +810,8 @@ namespace nvrhi::metal
                 std::copy(slots.begin(), slots.begin() + std::min(newSize, uint32_t(slots.size())), resized.begin());
             slots = std::move(resized);
         }
+
+        descriptorTable->capacity = newSize;
     }
 
     // Check the descriptor's required state against the resource's permanent state.
@@ -830,6 +896,117 @@ namespace nvrhi::metal
         return CommandListHandle::Create(new CommandList(this, params));
     }
 
+    id<MTLBuffer> Device::getNullBuffer()
+    {
+        if (!m_NullBuffer)
+            m_NullBuffer = [m_Context.device newBufferWithLength:256 options:MTLResourceStorageModeShared];
+        return m_NullBuffer;
+    }
+
+    id<MTLTexture> Device::getNullTexture()
+    {
+        if (!m_NullTexture)
+        {
+            MTLTextureDescriptor* descriptor = [[MTLTextureDescriptor alloc] init];
+            descriptor.textureType = MTLTextureType2D;
+            descriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
+            descriptor.width = 1;
+            descriptor.height = 1;
+            descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+            descriptor.storageMode = MTLStorageModeShared;
+            m_NullTexture = [m_Context.device newTextureWithDescriptor:descriptor];
+        }
+        return m_NullTexture;
+    }
+
+    id<MTLTexture> Device::getNullTextureBuffer(Format format)
+    {
+        const Format viewFormat = format == Format::UNKNOWN ? Format::R32_UINT : format;
+        const auto cached = m_NullTextureBuffers.find(viewFormat);
+        if (cached != m_NullTextureBuffers.end())
+            return cached->second;
+
+        const MTLPixelFormat pixelFormat = convertFormat(viewFormat);
+        if (pixelFormat == MTLPixelFormatInvalid)
+            return nil;
+
+        // A texture buffer holds the typed buffer views of NVRHI, so the null
+        // resource of a typed buffer array is a texture buffer as well.
+        MTLTextureDescriptor* descriptor = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:pixelFormat
+            width:1 resourceOptions:MTLResourceStorageModeShared usage:MTLTextureUsageShaderRead];
+        id<MTLTexture> texture = [m_Context.device newTextureWithDescriptor:descriptor];
+
+        m_NullTextureBuffers.emplace(viewFormat, texture);
+        return texture;
+    }
+
+    id<MTLSamplerState> Device::getNullSampler()
+    {
+        if (!m_NullSampler)
+        {
+            MTLSamplerDescriptor* descriptor = [[MTLSamplerDescriptor alloc] init];
+            descriptor.minFilter = MTLSamplerMinMagFilterNearest;
+            descriptor.magFilter = MTLSamplerMinMagFilterNearest;
+            descriptor.mipFilter = MTLSamplerMipFilterNotMipmapped;
+            descriptor.sAddressMode = MTLSamplerAddressModeClampToEdge;
+            descriptor.tAddressMode = MTLSamplerAddressModeClampToEdge;
+            m_NullSampler = [m_Context.device newSamplerStateWithDescriptor:descriptor];
+        }
+        return m_NullSampler;
+    }
+
+    id<MTLComputePipelineState> Device::getIndirectCountPipeline()
+    {
+        if (m_IndirectCountPipeline)
+            return m_IndirectCountPipeline;
+
+        // Metal has no counted indirect draw, so the arguments of the draws that the
+        // count allows are copied into a scratch buffer. The commands that the count
+        // excludes are zeroed, which makes them a no-op.
+        static const char* source =
+            "#include <metal_stdlib>\n"
+            "using namespace metal;\n"
+            "kernel void expand_draw_args(\n"
+            "    device const uint* src_args [[buffer(0)]],\n"
+            "    device const uint* count_args [[buffer(1)]],\n"
+            "    device uint* dst_args [[buffer(2)]],\n"
+            "    device const uint* params [[buffer(3)]],\n"
+            "    uint gid [[thread_position_in_grid]])\n"
+            "{\n"
+            "    if (gid >= params[2])\n"
+            "        return;\n"
+            "    const uint count = min(count_args[params[1] >> 2], params[2]);\n"
+            "    const uint base = (params[0] >> 2) + gid * 5;\n"
+            "    for (uint i = 0; i < 5; ++i)\n"
+            "        dst_args[gid * 5 + i] = (gid < count) ? src_args[base + i] : 0;\n"
+            "}\n";
+
+        NSError* nsError = nil;
+        id<MTLLibrary> library = [m_Context.device newLibraryWithSource:@(source) options:nil error:&nsError];
+        if (!library)
+        {
+            m_Context.error("getIndirectCountPipeline: failed to compile the helper kernel: "
+                + std::string(nsError ? nsError.localizedDescription.UTF8String : "unknown error"));
+            return nil;
+        }
+
+        id<MTLFunction> function = [library newFunctionWithName:@"expand_draw_args"];
+        if (!function)
+        {
+            m_Context.error("getIndirectCountPipeline: the helper kernel is missing");
+            return nil;
+        }
+
+        m_IndirectCountPipeline = [m_Context.device newComputePipelineStateWithFunction:function error:&nsError];
+        if (!m_IndirectCountPipeline)
+        {
+            m_Context.error("getIndirectCountPipeline: failed to create the helper pipeline: "
+                + std::string(nsError ? nsError.localizedDescription.UTF8String : "unknown error"));
+        }
+
+        return m_IndirectCountPipeline;
+    }
+
     uint64_t Device::submitCommandList(ICommandList* commandList)
     {
         CommandList* list = checked_cast<CommandList*>(commandList);
@@ -857,6 +1034,10 @@ namespace nvrhi::metal
             m_CompletionCondition.notify_all();
         }];
 
+        // The submission signals the event when its work is done, which is what
+        // the queue waits of queueWaitForCommandList wait for.
+        [commandBuffer encodeSignalEvent:m_SubmissionEvent value:serial];
+
         [commandBuffer commit];
         list->releaseCommandBuffer();
 
@@ -865,7 +1046,8 @@ namespace nvrhi::metal
 
     uint64_t Device::executeCommandLists(ICommandList* const* pCommandLists, size_t numCommandLists, CommandQueue executionQueue)
     {
-        (void)executionQueue;
+        // The queue performs its pending waits on the GPU before this submission.
+        commitQueueWaits(executionQueue);
 
         uint64_t serial = 0;
         for (size_t i = 0; i < numCommandLists; ++i)
@@ -874,19 +1056,37 @@ namespace nvrhi::metal
         return serial;
     }
 
+    void Device::commitQueueWaits(CommandQueue executionQueue)
+    {
+        uint64_t instance = 0;
+        {
+            std::lock_guard< std::mutex > lock(m_QueueWaitMutex);
+            instance = m_PendingQueueWaits[uint32_t(executionQueue)];
+            m_PendingQueueWaits[uint32_t(executionQueue)] = 0;
+        }
+
+        if (instance == 0)
+            return;
+
+        id<MTLCommandBuffer> commandBuffer = [m_Context.queue commandBuffer];
+        if (!commandBuffer)
+            return;
+
+        [commandBuffer encodeWaitForEvent:m_SubmissionEvent value:instance];
+        [commandBuffer commit];
+    }
+
     void Device::queueWaitForCommandList(CommandQueue waitQueue, CommandQueue executionQueue, uint64_t instance)
     {
-        (void)waitQueue;
         (void)executionQueue;
 
         if (instance == 0)
             return;
 
-        std::unique_lock<std::mutex> lock(m_CompletionMutex);
-        m_CompletionCondition.wait(lock, [this, instance] {
-            std::lock_guard<std::mutex> submitLock(m_Mutex);
-            return m_LastCompletedSerial >= instance;
-        });
+        // The wait queue performs the wait on the GPU before its next submission,
+        // so this call never blocks the calling thread.
+        std::lock_guard< std::mutex > lock(m_QueueWaitMutex);
+        m_PendingQueueWaits[uint32_t(waitQueue)] = std::max(m_PendingQueueWaits[uint32_t(waitQueue)], instance);
     }
 
     bool Device::waitForIdle()
