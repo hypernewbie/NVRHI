@@ -56,17 +56,23 @@ add_executable(nvrhi_uaa_tests
     uaa_bindless.cpp
     uaa_buffer.cpp
     uaa_compute.cpp
+    uaa_coopvec.cpp
     uaa_cpu.cpp
     uaa_device.cpp
     uaa_fixture.cpp
     uaa_graphics.cpp
     uaa_heaps.cpp
     uaa_main.cpp
+    uaa_mesh.cpp
     uaa_native.cpp
     uaa_queries.cpp
+    uaa_raytracing.cpp
+    uaa_rt_advanced.cpp
     uaa_sampler.cpp
     uaa_shader.cpp
+    uaa_sparse.cpp
     uaa_states.cpp
+    uaa_stress.cpp
     uaa_submission.cpp
     uaa_texture.cpp
     uaa_utils.cpp
@@ -176,6 +182,16 @@ function(nvrhi_uaa_register_backend_tests backend_name)
         TIMEOUT 60
         SKIP_RETURN_CODE 77)
 
+    add_test(
+        NAME "uaa_${backend_name}_stress"
+        COMMAND nvrhi_uaa_tests
+            --backend "${backend_name}"
+            --validation off
+            --tag stress)
+    set_tests_properties("uaa_${backend_name}_stress" PROPERTIES
+        LABELS "uaa;${backend_name};stress"
+        TIMEOUT 300
+        SKIP_RETURN_CODE 77)
 endfunction()
 
 if(NVRHI_WITH_METAL)
@@ -193,6 +209,14 @@ endif()
 if(NVRHI_WITH_DX12)
     nvrhi_uaa_register_backend_tests(d3d12)
 endif()
+
+add_test(
+    NAME uaa_package
+    COMMAND nvrhi_uaa_tests --backend cpu --tag package --timeout 150)
+set_tests_properties(uaa_package PROPERTIES
+    LABELS "uaa;package"
+    TIMEOUT 180
+    SKIP_RETURN_CODE 77)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_FOUND)
