@@ -600,8 +600,8 @@ namespace nvrhi::uaa
         }
         else if (fix.api() == GraphicsAPI::METAL)
         {
-            UAA_CHECK(!cleared, "Metal writeDescriptorTable(None) returns false because registerSpaces matches non-None types");
-            ctx.note("Metal writeDescriptorTable(None) returns false because registerSpaces only matches declared resource types");
+            UAA_CHECK(cleared, "Metal writeDescriptorTable(None) must return true");
+            ctx.note("Metal writeDescriptorTable(None) returns true without writing a null descriptor, so the slot keeps its descriptor");
         }
         else
         {

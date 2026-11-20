@@ -869,6 +869,10 @@ namespace nvrhi::metal
         if (!descriptorTable || item.slot >= descriptorTable->capacity)
             return false;
 
+        // A null write leaves the slot as it is, like the Vulkan backend does.
+        if (item.type == ResourceType::None)
+            return true;
+
         // The written type picks its register space; a table declares one array per space.
         const BindingLayout* layout = checked_cast<BindingLayout*>(descriptorTable->layout.Get());
         for (size_t space = 0; space < layout->bindlessDesc.registerSpaces.size(); ++space)
@@ -876,8 +880,7 @@ namespace nvrhi::metal
             if (layout->bindlessDesc.registerSpaces[space].type != item.type)
                 continue;
 
-            if (item.type != ResourceType::None)
-                descriptorTable->slots[space][item.slot] = item;
+            descriptorTable->slots[space][item.slot] = item;
 
             // Check the descriptor type against the resource's permanent state.
             if (item.resourceHandle)
