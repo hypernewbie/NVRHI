@@ -143,6 +143,25 @@ namespace nvrhi::metal
         }
     }
 
+    // A comparison sampler compares the sampled value against the reference value.
+    // Metal puts the reference value on the left of the comparison, Vulkan and D3D
+    // put the sampled value there, so the operator is mirrored here.
+    MTLCompareFunction convertSamplerCompareFunc(ComparisonFunc op)
+    {
+        switch (op)
+        {
+        case ComparisonFunc::Never: return MTLCompareFunctionNever;
+        case ComparisonFunc::Less: return MTLCompareFunctionGreaterEqual;
+        case ComparisonFunc::Equal: return MTLCompareFunctionEqual;
+        case ComparisonFunc::LessOrEqual: return MTLCompareFunctionGreater;
+        case ComparisonFunc::Greater: return MTLCompareFunctionLessEqual;
+        case ComparisonFunc::NotEqual: return MTLCompareFunctionNotEqual;
+        case ComparisonFunc::GreaterOrEqual: return MTLCompareFunctionLess;
+        case ComparisonFunc::Always: return MTLCompareFunctionAlways;
+        default: return MTLCompareFunctionAlways;
+        }
+    }
+
     MTLVertexFormat convertVertexFormat(Format format)
     {
         switch (format)

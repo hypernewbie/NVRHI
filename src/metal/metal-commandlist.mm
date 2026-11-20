@@ -116,6 +116,7 @@ namespace nvrhi::metal
         endEncoder();
         m_CurrentComputePipeline = nullptr;
         m_CurrentGraphicsPipeline = nullptr;
+        m_ReferencedResources.clear();
         m_CommandBuffer = [m_Device->getQueue() commandBuffer];
         m_IsOpen = true;
     }
@@ -1491,15 +1492,21 @@ namespace nvrhi::metal
 
     void CommandList::setTextureState(ITexture* texture, TextureSubresourceSet subresources, ResourceStates stateBits)
     {
-        (void)texture;
         (void)subresources;
         (void)stateBits;
+
+        Texture* tex = checked_cast<Texture*>(texture);
+        if (tex)
+            m_ReferencedResources.push_back(tex);
     }
 
     void CommandList::setBufferState(IBuffer* buffer, ResourceStates stateBits)
     {
-        (void)buffer;
         (void)stateBits;
+
+        Buffer* buf = checked_cast<Buffer*>(buffer);
+        if (buf)
+            m_ReferencedResources.push_back(buf);
     }
 
     void CommandList::setAccelStructState(rt::IAccelStruct* as, ResourceStates stateBits)

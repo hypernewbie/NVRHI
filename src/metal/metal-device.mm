@@ -635,7 +635,7 @@ namespace nvrhi::metal
         descriptor.maxAnisotropy = d.maxAnisotropy;
         descriptor.lodMinClamp = 0.f;
         descriptor.lodMaxClamp = FLT_MAX;
-        descriptor.compareFunction = convertCompareFunc(d.compareFunc);
+        descriptor.compareFunction = convertSamplerCompareFunc(d.compareFunc);
 
         id<MTLSamplerState> sampler = [m_Context.device newSamplerStateWithDescriptor:descriptor];
         if (!sampler)
@@ -1031,11 +1031,18 @@ namespace nvrhi::metal
         }
 
         __block uint64_t completedSerial = serial;
+
+        // The resources the command buffer uses stay alive until the GPU is done with
+        // it. The handler block holds them and releases them when the command buffer
+        // completes.
+        __block std::vector<RefCountPtr<IResource>> referencedResources = list->takeReferencedResources();
+
         [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
             std::lock_guard< std::mutex > lock(m_CompletionMutex);
             if (completedSerial > m_LastCompletedSerial)
                 m_LastCompletedSerial = completedSerial;
             m_CompletionCondition.notify_all();
+            referencedResources.clear();
         }];
 
         // The submission signals the event when its work is done, which is what

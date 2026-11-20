@@ -436,6 +436,13 @@ namespace nvrhi::metal
         id<MTLCommandBuffer> getCommandBuffer() const { return m_CommandBuffer; }
         void releaseCommandBuffer() { m_CommandBuffer = nil; }
 
+        // Hands the referenced resources over to the caller, which keeps them alive
+        // until the GPU is done with the command buffer.
+        std::vector<RefCountPtr<IResource>> takeReferencedResources()
+        {
+            return std::move( m_ReferencedResources );
+        }
+
     private:
         void endEncoder();
         id<MTLComputeCommandEncoder> getComputeEncoder();
@@ -494,6 +501,11 @@ namespace nvrhi::metal
         // Apply permanent resource states when the command list is submitted.
         std::vector<std::pair<TextureStateExtension*, ResourceStates>> m_PermanentTextureStates;
         std::vector<std::pair<BufferStateExtension*, ResourceStates>> m_PermanentBufferStates;
+
+        // The resources the command buffer uses, so they stay alive until it is
+        // committed. Metal keeps the Metal objects alive on its own, but the NVRHI
+        // wrappers are what the command list still points at.
+        std::vector<RefCountPtr<IResource>> m_ReferencedResources;
 
         std::vector<uint8_t> m_PushConstants;
 
@@ -632,6 +644,7 @@ namespace nvrhi::metal
     MTLSamplerAddressMode convertSamplerAddressMode(SamplerAddressMode mode);
     MTLSamplerBorderColor convertSamplerBorderColor(const Color& color);
     MTLCompareFunction convertCompareFunc(ComparisonFunc op);
+    MTLCompareFunction convertSamplerCompareFunc(ComparisonFunc op);
 
     MTLVertexFormat convertVertexFormat(Format format);
     MTLPrimitiveType convertPrimitiveType(PrimitiveType type);

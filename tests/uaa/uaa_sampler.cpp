@@ -477,11 +477,11 @@ namespace nvrhi::uaa
                 UAA_CHECK_NEAR(outVals[1], expRight, 0.01f, label + " right (depth 0.75 vs ref 0.5)");
             };
 
-            // SampleCmp compares the supplied reference against the sampled depth. With a
-            // Less comparison, reference 0.5 is less than the right texel (0.75), while
-            // Greater succeeds against the left texel (0.25).
-            checkCompare(nvrhi::ComparisonFunc::Less, 0.0f, 1.0f, "ComparisonFunc::Less");
-            checkCompare(nvrhi::ComparisonFunc::Greater, 1.0f, 0.0f, "ComparisonFunc::Greater");
+            // SampleCmp compares the sampled depth against the supplied reference. With a
+            // Less comparison the left texel (0.25) is less than the reference (0.5),
+            // while Greater succeeds against the right texel (0.75).
+            checkCompare(nvrhi::ComparisonFunc::Less, 1.0f, 0.0f, "ComparisonFunc::Less");
+            checkCompare(nvrhi::ComparisonFunc::Greater, 0.0f, 1.0f, "ComparisonFunc::Greater");
         }
 
         // Tests maxAnisotropy, mipBias (via SampleGrad), and Minimum/Maximum reduction when supported.
