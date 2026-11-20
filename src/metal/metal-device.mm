@@ -333,6 +333,7 @@ namespace nvrhi::metal
         Texture* result = new Texture();
         result->desc = d;
         result->texture = texture;
+        result->usage = usage;
         return TextureHandle::Create(result);
     }
 

@@ -127,6 +127,9 @@ namespace nvrhi::metal
         id<MTLTexture> texture = nil;
         bool isCPUVisible = false;
 
+        // The usage the texture was created with. A colour clear needs the render target usage.
+        MTLTextureUsage usage = 0;
+
         // A virtual texture keeps its descriptor until bindTextureMemory places it on a heap.
         MTLTextureDescriptor* descriptor = nil;
 
@@ -467,6 +470,26 @@ namespace nvrhi::metal
         // re-apply the state when the next dispatch or draw opens a new one.
         ComputeState m_CurrentComputeState;
         GraphicsState m_CurrentGraphicsState;
+
+        // A new encoder starts without any state, so the whole graphics state is
+        // applied again. The flag is cleared when the encoder ends.
+        bool m_RenderEncoderStateValid = false;
+
+        // The graphics state that is currently set on the render encoder, so an
+        // unchanged part is not set again.
+        uint32_t m_AppliedStencilRefValue = 0;
+        nvrhi::Color m_AppliedBlendConstantColor{};
+        nvrhi::Viewport m_AppliedViewport{};
+        size_t m_AppliedViewportCount = 0;
+        nvrhi::Rect m_AppliedScissor{};
+        size_t m_AppliedScissorCount = 0;
+        static_vector<VertexBufferBinding, c_MaxVertexAttributes> m_AppliedVertexBuffers;
+        BindingSetVector m_AppliedBindings;
+
+        // The compute state that is currently set on the compute encoder.
+        bool m_ComputeEncoderStateValid = false;
+        ComputePipeline* m_AppliedComputePipeline = nullptr;
+        BindingSetVector m_AppliedComputeBindings;
 
         // Apply permanent resource states when the command list is submitted.
         std::vector<std::pair<TextureStateExtension*, ResourceStates>> m_PermanentTextureStates;

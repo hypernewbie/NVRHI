@@ -138,12 +138,14 @@ namespace nvrhi::metal
         {
             [m_ComputeEncoder endEncoding];
             m_ComputeEncoder = nil;
+            m_ComputeEncoderStateValid = false;
         }
 
         if (m_RenderEncoder)
         {
             [m_RenderEncoder endEncoding];
             m_RenderEncoder = nil;
+            m_RenderEncoderStateValid = false;
             // The framebuffer stays, because the pass is reopened with it when the
             // next draw needs a render encoder.
         }
@@ -161,12 +163,16 @@ namespace nvrhi::metal
         {
             endEncoder();
             m_ComputeEncoder = [m_CommandBuffer computeCommandEncoder];
+            m_ComputeEncoderStateValid = false;
 
             // A new encoder starts with no state, so the current compute state is re-applied.
             if (m_ComputeEncoder && m_CurrentComputePipeline)
             {
                 [m_ComputeEncoder setComputePipelineState:m_CurrentComputePipeline->pipeline];
+                m_AppliedComputePipeline = m_CurrentComputePipeline;
+                m_AppliedComputeBindings = m_CurrentComputeState.bindings;
                 bindComputeResources(m_CurrentComputeState);
+                m_ComputeEncoderStateValid = true;
             }
         }
 
@@ -200,9 +206,25 @@ namespace nvrhi::metal
         if (!encoder)
             return;
 
-        [encoder setComputePipelineState:pso->pipeline];
+        // A new encoder has no state, so everything is applied again. Otherwise only
+        // the parts that changed are applied, like the Vulkan backend does.
+        const bool fullUpdate = !m_ComputeEncoderStateValid;
+        const bool pipelineChanged = fullUpdate || m_AppliedComputePipeline != pso;
 
-        bindComputeResources(state);
+        if (pipelineChanged)
+        {
+            [encoder setComputePipelineState:pso->pipeline];
+            m_AppliedComputePipeline = pso;
+        }
+
+        // A new pipeline can map the same binding set to other argument slots.
+        if (fullUpdate || pipelineChanged || arraysAreDifferent(m_AppliedComputeBindings, state.bindings))
+        {
+            m_AppliedComputeBindings = state.bindings;
+            bindComputeResources(state);
+        }
+
+        m_ComputeEncoderStateValid = true;
     }
 
     namespace
@@ -648,6 +670,45 @@ namespace nvrhi::metal
         const uint32_t baseSlice = subresources.baseArraySlice;
         const uint32_t numSlices = subresources.numArraySlices == uint32_t(-1) ? desc.arraySize - baseSlice : subresources.numArraySlices;
 
+        // Metal clears a colour attachment through the render pass. That keeps the
+        // pattern off the CPU, so it is much cheaper than copying the pattern in.
+        // The path needs a render target usage and a colour format Metal can clear.
+        const FormatInfo& info = getFormatInfo(desc.format);
+        const bool clearWithRenderPass = !integer
+            && ( info.kind == FormatKind::Float || info.kind == FormatKind::Normalized )
+            && ( texture->usage & MTLTextureUsageRenderTarget )
+            && convertFormat( desc.format ) != MTLPixelFormatInvalid;
+
+        if ( clearWithRenderPass )
+        {
+            endEncoder();
+
+            const MTLClearColor clearColor = MTLClearColorMake( color.r, color.g, color.b, color.a );
+
+            for ( uint32_t mip = 0; mip < numMips; ++mip )
+            {
+                for ( uint32_t slice = 0; slice < numSlices; ++slice )
+                {
+                    MTLRenderPassDescriptor* passDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+                    MTLRenderPassColorAttachmentDescriptor* attachment = passDescriptor.colorAttachments[0];
+                    attachment.texture = texture->texture;
+                    attachment.loadAction = MTLLoadActionClear;
+                    attachment.storeAction = MTLStoreActionStore;
+                    attachment.clearColor = clearColor;
+                    attachment.level = baseMip + mip;
+                    if ( desc.dimension == TextureDimension::Texture3D )
+                        attachment.depthPlane = baseSlice + slice;
+                    else
+                        attachment.slice = baseSlice + slice;
+
+                    id<MTLRenderCommandEncoder> encoder = [m_CommandBuffer renderCommandEncoderWithDescriptor:passDescriptor];
+                    [encoder endEncoding];
+                }
+            }
+
+            return;
+        }
+
         for (uint32_t mip = 0; mip < numMips; ++mip)
         {
             const uint32_t width = getMipSize(desc.width, baseMip + mip);
@@ -738,6 +799,7 @@ namespace nvrhi::metal
 
         m_RenderEncoder = [m_CommandBuffer renderCommandEncoderWithDescriptor:passDescriptor];
         m_RenderEncoderFramebuffer = framebuffer;
+        m_RenderEncoderStateValid = false;
         return m_RenderEncoder;
     }
 
@@ -754,17 +816,30 @@ namespace nvrhi::metal
         if (!encoder)
             return;
 
-        [encoder setRenderPipelineState:pso->pipeline];
+        // A new encoder has no state, so everything is applied again. Otherwise only
+        // the parts that changed are applied, like the Vulkan backend does.
+        const bool fullUpdate = !m_RenderEncoderStateValid;
+        const bool pipelineChanged = fullUpdate || m_CurrentGraphicsPipeline != pso;
 
-        const RasterState& rasterState = pso->desc.renderState.rasterState;
-        [encoder setCullMode:convertCullMode(rasterState.cullMode)];
-        [encoder setTriangleFillMode:rasterState.fillMode == RasterFillMode::Wireframe ? MTLTriangleFillModeLines : MTLTriangleFillModeFill];
-        [encoder setFrontFacingWinding:rasterState.frontCounterClockwise ? MTLWindingCounterClockwise : MTLWindingClockwise];
-        [encoder setDepthClipMode:rasterState.depthClipEnable ? MTLDepthClipModeClip : MTLDepthClipModeClamp];
+        if (pipelineChanged)
+        {
+            [encoder setRenderPipelineState:pso->pipeline];
 
-        // Metal rejects a depth state when the pass has no depth attachment.
-        if (framebuffer->desc.depthAttachment.texture)
-            [encoder setDepthStencilState:pso->depthStencilState];
+            const RasterState& rasterState = pso->desc.renderState.rasterState;
+            [encoder setCullMode:convertCullMode(rasterState.cullMode)];
+            [encoder setTriangleFillMode:rasterState.fillMode == RasterFillMode::Wireframe ? MTLTriangleFillModeLines : MTLTriangleFillModeFill];
+            [encoder setFrontFacingWinding:rasterState.frontCounterClockwise ? MTLWindingCounterClockwise : MTLWindingClockwise];
+            [encoder setDepthClipMode:rasterState.depthClipEnable ? MTLDepthClipModeClip : MTLDepthClipModeClamp];
+
+            // Metal rejects a depth state when the pass has no depth attachment.
+            if (framebuffer->desc.depthAttachment.texture)
+                [encoder setDepthStencilState:pso->depthStencilState];
+
+            if (rasterState.depthBias != 0 || rasterState.slopeScaledDepthBias != 0.f || rasterState.depthBiasClamp != 0.f)
+            {
+                [encoder setDepthBias:float(rasterState.depthBias) slopeScale:rasterState.slopeScaledDepthBias clamp:rasterState.depthBiasClamp];
+            }
+        }
 
         // Metal sets the stencil reference value on the encoder. The pipeline holds the
         // static value, and the state overrides it when the pipeline uses a dynamic one.
@@ -772,13 +847,16 @@ namespace nvrhi::metal
         const uint32_t stencilRefValue = depthStencilState.dynamicStencilRef
             ? state.dynamicStencilRefValue
             : depthStencilState.stencilRefValue;
-        [encoder setStencilReferenceValue:stencilRefValue];
-
-        [encoder setBlendColorRed:state.blendConstantColor.r green:state.blendConstantColor.g blue:state.blendConstantColor.b alpha:state.blendConstantColor.a];
-
-        if (rasterState.depthBias != 0 || rasterState.slopeScaledDepthBias != 0.f || rasterState.depthBiasClamp != 0.f)
+        if (fullUpdate || m_AppliedStencilRefValue != stencilRefValue)
         {
-            [encoder setDepthBias:float(rasterState.depthBias) slopeScale:rasterState.slopeScaledDepthBias clamp:rasterState.depthBiasClamp];
+            [encoder setStencilReferenceValue:stencilRefValue];
+            m_AppliedStencilRefValue = stencilRefValue;
+        }
+
+        if (fullUpdate || m_AppliedBlendConstantColor != state.blendConstantColor)
+        {
+            [encoder setBlendColorRed:state.blendConstantColor.r green:state.blendConstantColor.g blue:state.blendConstantColor.b alpha:state.blendConstantColor.a];
+            m_AppliedBlendConstantColor = state.blendConstantColor;
         }
 
         m_IndexBuffer = state.indexBuffer;
@@ -787,38 +865,68 @@ namespace nvrhi::metal
         if (!state.viewport.viewports.empty())
         {
             const Viewport& viewport = state.viewport.viewports[0];
-            MTLViewport metalViewport;
-            metalViewport.originX = viewport.minX;
-            metalViewport.originY = viewport.minY;
-            metalViewport.width = viewport.maxX - viewport.minX;
-            metalViewport.height = viewport.maxY - viewport.minY;
-            metalViewport.znear = viewport.minZ;
-            metalViewport.zfar = viewport.maxZ;
-            [encoder setViewport:metalViewport];
+            const bool viewportChanged = fullUpdate
+                || state.viewport.viewports.size() != m_AppliedViewportCount
+                || m_AppliedViewport != viewport;
+
+            if (viewportChanged)
+            {
+                MTLViewport metalViewport;
+                metalViewport.originX = viewport.minX;
+                metalViewport.originY = viewport.minY;
+                metalViewport.width = viewport.maxX - viewport.minX;
+                metalViewport.height = viewport.maxY - viewport.minY;
+                metalViewport.znear = viewport.minZ;
+                metalViewport.zfar = viewport.maxZ;
+                [encoder setViewport:metalViewport];
+                m_AppliedViewport = viewport;
+                m_AppliedViewportCount = state.viewport.viewports.size();
+            }
         }
 
         if (!state.viewport.scissorRects.empty())
         {
             const Rect& rect = state.viewport.scissorRects[0];
-            MTLScissorRect scissorRect;
-            scissorRect.x = rect.minX;
-            scissorRect.y = rect.minY;
-            scissorRect.width = rect.maxX - rect.minX;
-            scissorRect.height = rect.maxY - rect.minY;
-            [encoder setScissorRect:scissorRect];
+            const bool scissorChanged = fullUpdate
+                || state.viewport.scissorRects.size() != m_AppliedScissorCount
+                || m_AppliedScissor != rect;
+
+            if (scissorChanged)
+            {
+                MTLScissorRect scissorRect;
+                scissorRect.x = rect.minX;
+                scissorRect.y = rect.minY;
+                scissorRect.width = rect.maxX - rect.minX;
+                scissorRect.height = rect.maxY - rect.minY;
+                [encoder setScissorRect:scissorRect];
+                m_AppliedScissor = rect;
+                m_AppliedScissorCount = state.viewport.scissorRects.size();
+            }
         }
 
-        for (const auto& vertexBuffer : state.vertexBuffers)
+        if (fullUpdate || arraysAreDifferent(m_AppliedVertexBuffers, state.vertexBuffers))
         {
-            const Buffer* buffer = checked_cast<Buffer*>(vertexBuffer.buffer);
-            if (!buffer || !buffer->buffer)
-                continue;
+            for (const auto& vertexBuffer : state.vertexBuffers)
+            {
+                const Buffer* buffer = checked_cast<Buffer*>(vertexBuffer.buffer);
+                if (!buffer || !buffer->buffer)
+                    continue;
 
-            [encoder setVertexBuffer:buffer->buffer offset:vertexBuffer.offset atIndex:c_VertexBufferBase + vertexBuffer.slot];
+                [encoder setVertexBuffer:buffer->buffer offset:vertexBuffer.offset atIndex:c_VertexBufferBase + vertexBuffer.slot];
+            }
+            m_AppliedVertexBuffers = state.vertexBuffers;
         }
 
         m_CurrentGraphicsPipeline = pso;
-        bindGraphicsResources(state);
+
+        // A new pipeline can map the same binding set to other argument slots.
+        if (fullUpdate || pipelineChanged || arraysAreDifferent(m_AppliedBindings, state.bindings))
+        {
+            m_AppliedBindings = state.bindings;
+            bindGraphicsResources(state);
+        }
+
+        m_RenderEncoderStateValid = true;
     }
 
     void CommandList::bindGraphicsResources(const GraphicsState& state)
