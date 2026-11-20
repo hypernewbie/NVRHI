@@ -456,23 +456,13 @@ namespace nvrhi::uaa
 
             {
                 ExpectErrorsGuard guard(fix);
-                bool skipDirectMapCall = false;
-#if !defined(NDEBUG)
-                skipDirectMapCall = (fix.api() == nvrhi::GraphicsAPI::VULKAN &&
-                    fix.deviceInfo().driverName.find("MoltenVK") != std::string::npos);
-#endif
-                if (skipDirectMapCall)
-                {
-                    UAA_CHECK(false,
-                        "validation::DeviceWrapper::mapBuffer does not reject CpuAccessMode::None; "
-                        "calling mapBuffer on MoltenVK Debug private memory triggers assert(res == vk::Result::eSuccess) at vulkan-buffer.cpp:614");
-                }
-                else
-                {
-                    void* pNone = dev->mapBuffer(noneBuf, nvrhi::CpuAccessMode::Write);
-                    (void)pNone;
-                    UAA_CHECK(guard.errorCount() > 0, "Expected validation error when mapping CpuAccessMode::None buffer");
-                }
+
+                // The validation layer rejects the call before it reaches the driver,
+                // so the buffer is never mapped.
+                void* pNone = dev->mapBuffer(noneBuf, nvrhi::CpuAccessMode::Write);
+                (void)pNone;
+                UAA_CHECK(guard.errorCount() > 0, "Expected validation error when mapping CpuAccessMode::None buffer");
+                UAA_CHECK(pNone == nullptr, "Mapping a buffer without CPU access must not return a pointer");
             }
 
             {

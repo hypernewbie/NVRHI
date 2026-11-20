@@ -372,23 +372,36 @@ namespace nvrhi::uaa
             badEntryDesc.setShaderType(ShaderType::Compute)
                 .setEntryName("does_not_exist")
                 .setDebugName("invalid_entry");
-            ShaderHandle badEntry = dev->createShader(badEntryDesc, validBinary.data(), validBinary.size());
-            if (fix.api() == GraphicsAPI::VULKAN && badEntry != nullptr)
-            {
-                BindingLayoutHandle layout = dev->createBindingLayout(
-                    fix.makeBindingLayoutDesc(ShaderType::Compute)
-                        .addItem(BindingLayoutItem::ConstantBuffer(0))
-                        .addItem(BindingLayoutItem::StructuredBuffer_SRV(1))
-                        .addItem(BindingLayoutItem::StructuredBuffer_UAV(2)));
-                UAA_CHECK(layout != nullptr, "createBindingLayout returned null");
 
-                ComputePipelineHandle badPso = dev->createComputePipeline(
-                    ComputePipelineDesc().setComputeShader(badEntry).addBindingLayout(layout));
-                UAA_CHECK(badPso == nullptr, "Non-existent entry point must fail pipeline creation on Vulkan");
+            // MoltenVK throws an uncaught exception from its shader compiler when the
+            // entry point is missing, so the case is skipped there.
+            const bool moltenVK = (fix.api() == GraphicsAPI::VULKAN)
+                && fix.deviceInfo().driverName.find("MoltenVK") != std::string::npos;
+
+            if (moltenVK)
+            {
+                ctx.note("Skipped the missing entry point case on MoltenVK because the driver throws an uncaught exception");
             }
             else
             {
-                UAA_CHECK(badEntry == nullptr, "createShader with non-existent entry point must return nullptr");
+                ShaderHandle badEntry = dev->createShader(badEntryDesc, validBinary.data(), validBinary.size());
+                if (fix.api() == GraphicsAPI::VULKAN && badEntry != nullptr)
+                {
+                    BindingLayoutHandle layout = dev->createBindingLayout(
+                        fix.makeBindingLayoutDesc(ShaderType::Compute)
+                            .addItem(BindingLayoutItem::ConstantBuffer(0))
+                            .addItem(BindingLayoutItem::StructuredBuffer_SRV(1))
+                            .addItem(BindingLayoutItem::StructuredBuffer_UAV(2)));
+                    UAA_CHECK(layout != nullptr, "createBindingLayout returned null");
+
+                    ComputePipelineHandle badPso = dev->createComputePipeline(
+                        ComputePipelineDesc().setComputeShader(badEntry).addBindingLayout(layout));
+                    UAA_CHECK(badPso == nullptr, "Non-existent entry point must fail pipeline creation on Vulkan");
+                }
+                else
+                {
+                    UAA_CHECK(badEntry == nullptr, "createShader with non-existent entry point must return nullptr");
+                }
             }
         }
 
