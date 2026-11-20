@@ -1,0 +1,808 @@
+{
+  "compiler": "dxc",
+  "compilerVersion": "libdxcompiler.dylib: 1.10(5180-e3554182)(1.9.0.5180)",
+  "licence": "MIT",
+  "dxilSupported": true,
+  "artifacts": [
+    {
+      "name": "cs_buffer_copy_add",
+      "kind": "spirv",
+      "source": "hlsl/cs_buffer_copy_add.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_buffer_copy_add.spv",
+      "bytes": 1332,
+      "sha256": "9f2ba6b258ef73b5ab5bf74ce2745caf92f44ea5863b535fe2ec9faa04b46192"
+    },
+    {
+      "name": "cs_buffer_copy_add",
+      "kind": "dxil",
+      "source": "hlsl/cs_buffer_copy_add.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_buffer_copy_add.dxil",
+      "bytes": 3708,
+      "sha256": "f6ceade2f167b75ca701efa82e3a59dc2631e912d9da59172c8f1eabf2091b66"
+    },
+    {
+      "name": "cs_raw_typed_rw",
+      "kind": "spirv",
+      "source": "hlsl/cs_raw_typed_rw.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_raw_typed_rw.spv",
+      "bytes": 2560,
+      "sha256": "5cbe809d003e5df55b7a3275af67bf73645d9bffc10a7ee5e7eed91b0a8dd687"
+    },
+    {
+      "name": "cs_raw_typed_rw",
+      "kind": "dxil",
+      "source": "hlsl/cs_raw_typed_rw.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_raw_typed_rw.dxil",
+      "bytes": 4044,
+      "sha256": "82c001a664452040b063ebeeb4e27372d62e6b7e15210197ad22ef4e7e670a8d"
+    },
+    {
+      "name": "cs_push_constants",
+      "kind": "spirv",
+      "source": "hlsl/cs_push_constants.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_push_constants.spv",
+      "bytes": 980,
+      "sha256": "c3e405ab497fa8789581bd179f158335baeee76596cd2f91dc1f5b848d0a2153"
+    },
+    {
+      "name": "cs_push_constants",
+      "kind": "dxil",
+      "source": "hlsl/cs_push_constants.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_push_constants.dxil",
+      "bytes": 3168,
+      "sha256": "d3e66f82b16ca0a81907c77b726e46b228fb259350eb3158b452f5c76bd9d7e8"
+    },
+    {
+      "name": "cs_spec_const",
+      "kind": "spirv",
+      "source": "hlsl/cs_spec_const.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_spec_const.spv",
+      "bytes": 752,
+      "sha256": "24b984e0837fcd0030417e94de125724e0bb8b55e67d94fcd344cc8e38d60e18"
+    },
+    {
+      "name": "cs_spec_const",
+      "kind": "dxil",
+      "source": "hlsl/cs_spec_const.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_spec_const.dxil",
+      "bytes": 3288,
+      "sha256": "6d4824628c770d95fae3cb4c29adb6691c4e53a35ad9ec728bbb3ca921c95559"
+    },
+    {
+      "name": "cs_indirect_gen",
+      "kind": "spirv",
+      "source": "hlsl/cs_indirect_gen.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_indirect_gen.spv",
+      "bytes": 1688,
+      "sha256": "000d019e943e2afc9994019975fe58e258914f02020f8283dd0da7975b6b3956"
+    },
+    {
+      "name": "cs_indirect_gen",
+      "kind": "dxil",
+      "source": "hlsl/cs_indirect_gen.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_indirect_gen.dxil",
+      "bytes": 3720,
+      "sha256": "22db5abb799b789e43f482b20312427ed4f5c4d99798d9b3f45280b5962c7bcd"
+    },
+    {
+      "name": "cs_indirect_work",
+      "kind": "spirv",
+      "source": "hlsl/cs_indirect_work.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_indirect_work.spv",
+      "bytes": 1208,
+      "sha256": "7790cfd441823ac64c9c9d194a9d95e4b6e3f4471dbb1f51d5774a788f7b622e"
+    },
+    {
+      "name": "cs_indirect_work",
+      "kind": "dxil",
+      "source": "hlsl/cs_indirect_work.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_indirect_work.dxil",
+      "bytes": 3304,
+      "sha256": "1476b2f92ba07d90f9bbfbe701abc49c8dc529dff377d5f17c5159adee740102"
+    },
+    {
+      "name": "cs_sampler_test",
+      "kind": "spirv",
+      "source": "hlsl/cs_sampler_test.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_sampler_test.spv",
+      "bytes": 2472,
+      "sha256": "7a683ca8e42a732266774258dfff18dee85608b1b084e25603acc34ba3b3a2b9"
+    },
+    {
+      "name": "cs_sampler_test",
+      "kind": "dxil",
+      "source": "hlsl/cs_sampler_test.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_sampler_test.dxil",
+      "bytes": 4552,
+      "sha256": "2aff3b6ef2c366ba38a809317dc78ec3f636dd3bb3e1a496ff5a075aba0ee5c0"
+    },
+    {
+      "name": "cs_sampler_compare",
+      "kind": "spirv",
+      "source": "hlsl/cs_sampler_compare.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_sampler_compare.spv",
+      "bytes": 1864,
+      "sha256": "f2d47056f0979e384eda59968b24e3217c25100ebe0bdf6ab8b2476a2716b506"
+    },
+    {
+      "name": "cs_sampler_compare",
+      "kind": "dxil",
+      "source": "hlsl/cs_sampler_compare.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_sampler_compare.dxil",
+      "bytes": 4184,
+      "sha256": "913b6935149fb7f061ef74b908d2242ffc605476770258b429cd2c766de828f4"
+    },
+    {
+      "name": "cs_texture_uav_fill",
+      "kind": "spirv",
+      "source": "hlsl/cs_texture_uav_fill.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_texture_uav_fill.spv",
+      "bytes": 1652,
+      "sha256": "f01687239701be8f583bb20333cfc9d8ec33fe14d613eba32d9b65a0b0235168"
+    },
+    {
+      "name": "cs_texture_uav_fill",
+      "kind": "dxil",
+      "source": "hlsl/cs_texture_uav_fill.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_texture_uav_fill.dxil",
+      "bytes": 3724,
+      "sha256": "8cad932b484aa4440778fd07a70431a84eb4b43b3644d44ed61bcc2a02d0f264"
+    },
+    {
+      "name": "cs_uav_chain",
+      "kind": "spirv",
+      "source": "hlsl/cs_uav_chain.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_uav_chain.spv",
+      "bytes": 1124,
+      "sha256": "352365b1c31f34f2df478460f7899ac2d2170f1a47f69caf82a3c5baa562b58c"
+    },
+    {
+      "name": "cs_uav_chain",
+      "kind": "dxil",
+      "source": "hlsl/cs_uav_chain.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_uav_chain.dxil",
+      "bytes": 3464,
+      "sha256": "0809c12987b65dd066d7d82f5d45c6de3f199be65d1e53cce127701bd60e9c4d"
+    },
+    {
+      "name": "cs_bindings_all",
+      "kind": "spirv",
+      "source": "hlsl/cs_bindings_all.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_bindings_all.spv",
+      "bytes": 2780,
+      "sha256": "7c294c95204d5b752fc636bcf8ae89e9c01c6d71b033ebdf9eb71957ad119597"
+    },
+    {
+      "name": "cs_bindings_all",
+      "kind": "dxil",
+      "source": "hlsl/cs_bindings_all.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_bindings_all.dxil",
+      "bytes": 4912,
+      "sha256": "94b1947e7c030e489a5975e2393344599620b092932cd18e73b2e050d5c32492"
+    },
+    {
+      "name": "cs_multi_set",
+      "kind": "spirv",
+      "source": "hlsl/cs_multi_set.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_multi_set.spv",
+      "bytes": 840,
+      "sha256": "7a7b557ebe4325cd4463c5aa7c93b779997a5ff1e72c76ac3b89a13577a1b039"
+    },
+    {
+      "name": "cs_multi_set",
+      "kind": "dxil",
+      "source": "hlsl/cs_multi_set.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_multi_set.dxil",
+      "bytes": 3228,
+      "sha256": "ca6a759e2641e8c2b8e8917cb9aefb14ee5e5d231f6afe152e32a0f7d825b3d7"
+    },
+    {
+      "name": "cs_bindless_tex_buf",
+      "kind": "spirv",
+      "source": "hlsl/cs_bindless_tex_buf.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2"
+      ],
+      "output": "bin/spirv/cs_bindless_tex_buf.spv",
+      "bytes": 2996,
+      "sha256": "b1027d1230426dd28ad352a4d65c6215d5735a7c06cb98f2680e295b91c6e4ad"
+    },
+    {
+      "name": "cs_bindless_tex_buf",
+      "kind": "dxil",
+      "source": "hlsl/cs_bindless_tex_buf.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_bindless_tex_buf.dxil",
+      "bytes": 4948,
+      "sha256": "5833bc6e20e87072a8e8a334807b8f5989e86718ca5ebe03da1362e955d5162f"
+    },
+    {
+      "name": "cs_wave_lane",
+      "kind": "spirv",
+      "source": "hlsl/cs_wave_lane.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_wave_lane.spv",
+      "bytes": 732,
+      "sha256": "308f0056a258d13aaf6f2d6d0b7dd2dd170fd998e1fe4220e83f36f51b66034d"
+    },
+    {
+      "name": "cs_wave_lane",
+      "kind": "dxil",
+      "source": "hlsl/cs_wave_lane.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_wave_lane.dxil",
+      "bytes": 3040,
+      "sha256": "2ed488807c711ce8cfa94d7c5c5fe93e89910965c56f872a40304ca7c4ed37c9"
+    },
+    {
+      "name": "vs_fullscreen_tri",
+      "kind": "spirv",
+      "source": "hlsl/vs_fullscreen_tri.hlsl",
+      "entry": "main",
+      "target": "vs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/vs_fullscreen_tri.spv",
+      "bytes": 1180,
+      "sha256": "1bd1dda4d37e9d0c46801f76ee2a9ee8990271c489109ec3d00f0daa3898912d"
+    },
+    {
+      "name": "vs_fullscreen_tri",
+      "kind": "dxil",
+      "source": "hlsl/vs_fullscreen_tri.hlsl",
+      "entry": "main",
+      "target": "vs_6_0",
+      "flags": [],
+      "output": "bin/dxil/vs_fullscreen_tri.dxil",
+      "bytes": 3548,
+      "sha256": "3a818f7fd53e20de79f21638e23903610b59a0296fce08a5f445474d4612b93f"
+    },
+    {
+      "name": "ps_solid_color",
+      "kind": "spirv",
+      "source": "hlsl/ps_solid_color.hlsl",
+      "entry": "main",
+      "target": "ps_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/ps_solid_color.spv",
+      "bytes": 652,
+      "sha256": "3ee439244eb575203737a2761c93e3b35014e5822f052984546558586f208121"
+    },
+    {
+      "name": "ps_solid_color",
+      "kind": "dxil",
+      "source": "hlsl/ps_solid_color.hlsl",
+      "entry": "main",
+      "target": "ps_6_0",
+      "flags": [],
+      "output": "bin/dxil/ps_solid_color.dxil",
+      "bytes": 3152,
+      "sha256": "6ac42a8af75191beb9d834624a98f1bad43d18a5c6d0426eeb048d7505f93950"
+    },
+    {
+      "name": "ps_mrt",
+      "kind": "spirv",
+      "source": "hlsl/ps_mrt.hlsl",
+      "entry": "main",
+      "target": "ps_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/ps_mrt.spv",
+      "bytes": 676,
+      "sha256": "853ef36bcf0634164a1ce1085b993140fb3bf06f381c10d1f038f12152e58f00"
+    },
+    {
+      "name": "ps_mrt",
+      "kind": "dxil",
+      "source": "hlsl/ps_mrt.hlsl",
+      "entry": "main",
+      "target": "ps_6_0",
+      "flags": [],
+      "output": "bin/dxil/ps_mrt.dxil",
+      "bytes": 3272,
+      "sha256": "29751b573e68f697bc1745fec2596931ee7e54af87e6bab6ba4eeb44e7381563"
+    },
+    {
+      "name": "vs_vertex_input",
+      "kind": "spirv",
+      "source": "hlsl/vs_vertex_input.hlsl",
+      "entry": "main",
+      "target": "vs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/vs_vertex_input.spv",
+      "bytes": 1260,
+      "sha256": "7150902e44b9c8f90ea17fab4a5b73029c637131522224a823f040c44b6abb10"
+    },
+    {
+      "name": "vs_vertex_input",
+      "kind": "dxil",
+      "source": "hlsl/vs_vertex_input.hlsl",
+      "entry": "main",
+      "target": "vs_6_0",
+      "flags": [],
+      "output": "bin/dxil/vs_vertex_input.dxil",
+      "bytes": 4104,
+      "sha256": "4a6d9b64be7093c5888b6673b6e4f32b1f6a97ebdbca4f2fc0a1fd5b7f6a3312"
+    },
+    {
+      "name": "ps_vertex_color",
+      "kind": "spirv",
+      "source": "hlsl/ps_vertex_color.hlsl",
+      "entry": "main",
+      "target": "ps_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/ps_vertex_color.spv",
+      "bytes": 640,
+      "sha256": "4a6f69b89ec69844c3655231a7d1f6eef9f798c0e98651fc8d4e3b924abb6e19"
+    },
+    {
+      "name": "ps_vertex_color",
+      "kind": "dxil",
+      "source": "hlsl/ps_vertex_color.hlsl",
+      "entry": "main",
+      "target": "ps_6_0",
+      "flags": [],
+      "output": "bin/dxil/ps_vertex_color.dxil",
+      "bytes": 3508,
+      "sha256": "5eeb279ded2a2a05a6daa44f1aa48626076c1e9214fb40b8c4e9c106ace2369d"
+    },
+    {
+      "name": "vs_stage_iso",
+      "kind": "spirv",
+      "source": "hlsl/vs_stage_iso.hlsl",
+      "entry": "main",
+      "target": "vs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/vs_stage_iso.spv",
+      "bytes": 864,
+      "sha256": "c28e9e441a8c1bf3aa9cf28f690579daac6af56b4b491b8de59a4589ee89798b"
+    },
+    {
+      "name": "vs_stage_iso",
+      "kind": "dxil",
+      "source": "hlsl/vs_stage_iso.hlsl",
+      "entry": "main",
+      "target": "vs_6_0",
+      "flags": [],
+      "output": "bin/dxil/vs_stage_iso.dxil",
+      "bytes": 3572,
+      "sha256": "45d21e1a561af253baabc8baf761eb3c20a332e47482a4b97e8549cf2ff1448a"
+    },
+    {
+      "name": "ps_stage_iso",
+      "kind": "spirv",
+      "source": "hlsl/ps_stage_iso.hlsl",
+      "entry": "main",
+      "target": "ps_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/ps_stage_iso.spv",
+      "bytes": 640,
+      "sha256": "58edda01fab0846f338ddd0c4e08c016e1c0aea07dc8464881f165194ab36b6d"
+    },
+    {
+      "name": "ps_stage_iso",
+      "kind": "dxil",
+      "source": "hlsl/ps_stage_iso.hlsl",
+      "entry": "main",
+      "target": "ps_6_0",
+      "flags": [],
+      "output": "bin/dxil/ps_stage_iso.dxil",
+      "bytes": 3504,
+      "sha256": "f76af28ecfba128270d8ed8f8af24a6c21e0156a3161cbbb282a6f0443d53764"
+    },
+    {
+      "name": "cs_metal_custom_entry",
+      "kind": "spirv",
+      "source": "hlsl/cs_metal_custom_entry.hlsl",
+      "entry": "uaa_custom_entry",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1"
+      ],
+      "output": "bin/spirv/cs_metal_custom_entry.spv",
+      "bytes": 2232,
+      "sha256": "3bac65eb86e7d6cf0e51a6fb051acabea2d89997347c09e659ed1b5578c4e75a"
+    },
+    {
+      "name": "cs_metal_custom_entry",
+      "kind": "dxil",
+      "source": "hlsl/cs_metal_custom_entry.hlsl",
+      "entry": "uaa_custom_entry",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_metal_custom_entry.dxil",
+      "bytes": 4564,
+      "sha256": "d270bc5726ce13605e7dd653113852f1b21e2556dd3eadb5cb8cccd08febf954"
+    },
+    {
+      "name": "cs_ray_query",
+      "kind": "spirv",
+      "source": "hlsl/cs_ray_query.hlsl",
+      "entry": "main",
+      "target": "cs_6_5",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2",
+        "-fspv-extension=SPV_KHR_ray_query"
+      ],
+      "output": "bin/spirv/cs_ray_query.spv",
+      "bytes": 2752,
+      "sha256": "df4a9f3abf7dab815c6f33f54ff48f231e37288e8660d0165fcd023d1905e5e9"
+    },
+    {
+      "name": "cs_ray_query",
+      "kind": "dxil",
+      "source": "hlsl/cs_ray_query.hlsl",
+      "entry": "main",
+      "target": "cs_6_5",
+      "flags": [],
+      "output": "bin/dxil/cs_ray_query.dxil",
+      "bytes": 4728,
+      "sha256": "4bcaf3d765f97e919573c07be85d041dc6b8244ca4890ac44e42bc8d973d2386"
+    },
+    {
+      "name": "ms_triangle",
+      "kind": "spirv",
+      "source": "hlsl/ms_triangle.hlsl",
+      "entry": "main",
+      "target": "ms_6_5",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.3",
+        "-fspv-extension=SPV_EXT_mesh_shader"
+      ],
+      "output": "bin/spirv/ms_triangle.spv",
+      "bytes": 1260,
+      "sha256": "76373c5128080bc67763a7d25dd66ba598a60c4b94ab57f80fcd636253112c64"
+    },
+    {
+      "name": "ms_triangle",
+      "kind": "dxil",
+      "source": "hlsl/ms_triangle.hlsl",
+      "entry": "main",
+      "target": "ms_6_5",
+      "flags": [],
+      "output": "bin/dxil/ms_triangle.dxil",
+      "bytes": 3820,
+      "sha256": "0c7c0756363445aef41452ce3e44602ba3918ed4215ed23c49f962a15d3cb7b1"
+    },
+    {
+      "name": "ms_triangle_payload",
+      "kind": "spirv",
+      "source": "hlsl/ms_triangle_payload.hlsl",
+      "entry": "main",
+      "target": "ms_6_5",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.3",
+        "-fspv-extension=SPV_EXT_mesh_shader"
+      ],
+      "output": "bin/spirv/ms_triangle_payload.spv",
+      "bytes": 1200,
+      "sha256": "b38e474dc1fccf51b6d6cafd6cbcddf396a5a9382d45b9c1f0d458b8604df4b1"
+    },
+    {
+      "name": "ms_triangle_payload",
+      "kind": "dxil",
+      "source": "hlsl/ms_triangle_payload.hlsl",
+      "entry": "main",
+      "target": "ms_6_5",
+      "flags": [],
+      "output": "bin/dxil/ms_triangle_payload.dxil",
+      "bytes": 3508,
+      "sha256": "256fd519dfb972eb6a70d4be16a36d909eb84c802a76109376f7fc3c08d93af0"
+    },
+    {
+      "name": "as_task",
+      "kind": "spirv",
+      "source": "hlsl/as_task.hlsl",
+      "entry": "main",
+      "target": "as_6_5",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.3",
+        "-fspv-extension=SPV_EXT_mesh_shader"
+      ],
+      "output": "bin/spirv/as_task.spv",
+      "bytes": 728,
+      "sha256": "998830a6d5fc509d5fda514b21e612c4b47fa3233c799e514ecbc035b2d0edd3"
+    },
+    {
+      "name": "as_task",
+      "kind": "dxil",
+      "source": "hlsl/as_task.hlsl",
+      "entry": "main",
+      "target": "as_6_5",
+      "flags": [],
+      "output": "bin/dxil/as_task.dxil",
+      "bytes": 3016,
+      "sha256": "8c15be617146d5f554bdc65a7576fe755f7094cfd2c7f4b9f77ca85b94c7869b"
+    },
+    {
+      "name": "rt_lib",
+      "kind": "spirv",
+      "source": "hlsl/rt_lib.hlsl",
+      "entry": "RayGen,Miss,ClosestHit,AnyHit",
+      "target": "lib_6_3",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2",
+        "-fspv-extension=SPV_KHR_ray_tracing"
+      ],
+      "output": "bin/spirv/rt_lib.spv",
+      "bytes": 2764,
+      "sha256": "cae594a6a9958a12c272ba00da55c977c2c86d50d23fdd5a66afd5a1edbccc21"
+    },
+    {
+      "name": "rt_lib",
+      "kind": "dxil",
+      "source": "hlsl/rt_lib.hlsl",
+      "entry": "RayGen,Miss,ClosestHit,AnyHit",
+      "target": "lib_6_3",
+      "flags": [],
+      "output": "bin/dxil/rt_lib.dxil",
+      "bytes": 6688,
+      "sha256": "3a11705920b14a3aeb779198f65315a5103e89749cbe4aa9b533b86892b0cf11"
+    },
+    {
+      "name": "cs_multi_entry",
+      "kind": "spirv",
+      "source": "hlsl/cs_multi_entry.hlsl",
+      "entry": "entry_add,entry_mul",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.1",
+        "spirv-link"
+      ],
+      "output": "bin/spirv/cs_multi_entry.spv",
+      "bytes": 944,
+      "sha256": "7afd721a3936c408950b4544fb7ec1f3ce9c4409f31c64bdf08e119721c31378"
+    },
+    {
+      "name": "cs_bindings_all",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_bindings_all.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_bindings_all.spv",
+      "bytes": 2780,
+      "sha256": "7c294c95204d5b752fc636bcf8ae89e9c01c6d71b033ebdf9eb71957ad119597"
+    },
+    {
+      "name": "cs_bindless_tex_buf",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_bindless_tex_buf.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_bindless_tex_buf.spv",
+      "bytes": 2996,
+      "sha256": "b1027d1230426dd28ad352a4d65c6215d5735a7c06cb98f2680e295b91c6e4ad"
+    },
+    {
+      "name": "cs_metal_custom_entry",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_metal_custom_entry.spv",
+      "entry": "uaa_custom_entry",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_metal_custom_entry.spv",
+      "bytes": 2232,
+      "sha256": "3bac65eb86e7d6cf0e51a6fb051acabea2d89997347c09e659ed1b5578c4e75a"
+    },
+    {
+      "name": "cs_multi_set",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_multi_set.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_multi_set.spv",
+      "bytes": 840,
+      "sha256": "7a7b557ebe4325cd4463c5aa7c93b779997a5ff1e72c76ac3b89a13577a1b039"
+    },
+    {
+      "name": "cs_push_constants",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_push_constants.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_push_constants.spv",
+      "bytes": 980,
+      "sha256": "c3e405ab497fa8789581bd179f158335baeee76596cd2f91dc1f5b848d0a2153"
+    },
+    {
+      "name": "cs_raw_typed_rw",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_raw_typed_rw.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_raw_typed_rw.spv",
+      "bytes": 2560,
+      "sha256": "5cbe809d003e5df55b7a3275af67bf73645d9bffc10a7ee5e7eed91b0a8dd687"
+    },
+    {
+      "name": "cs_sampler_test",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_sampler_test.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_sampler_test.spv",
+      "bytes": 2472,
+      "sha256": "7a683ca8e42a732266774258dfff18dee85608b1b084e25603acc34ba3b3a2b9"
+    }
+  ]
+}
