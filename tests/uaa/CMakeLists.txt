@@ -51,6 +51,149 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/uaa_cpu.cpp")
         SKIP_RETURN_CODE 77)
 endif()
 
+add_executable(nvrhi_uaa_tests
+    uaa_bindings.cpp
+    uaa_bindless.cpp
+    uaa_buffer.cpp
+    uaa_compute.cpp
+    uaa_cpu.cpp
+    uaa_device.cpp
+    uaa_fixture.cpp
+    uaa_graphics.cpp
+    uaa_heaps.cpp
+    uaa_main.cpp
+    uaa_native.cpp
+    uaa_queries.cpp
+    uaa_sampler.cpp
+    uaa_shader.cpp
+    uaa_states.cpp
+    uaa_submission.cpp
+    uaa_texture.cpp
+    uaa_utils.cpp
+    uaa_validation.cpp)
+
+target_link_libraries(nvrhi_uaa_tests PRIVATE nvrhi)
+
+set(_uaa_has_vulkan 0)
+if(NVRHI_WITH_VULKAN)
+    set(_uaa_has_vulkan 1)
+    target_sources(nvrhi_uaa_tests PRIVATE uaa_vulkan.cpp)
+    target_link_libraries(nvrhi_uaa_tests PRIVATE
+        ${nvrhi_vulkan_target}
+        ${nvrhi_vulkan_headers_target}
+        ${CMAKE_DL_LIBS})
+endif()
+
+set(_uaa_has_metal 0)
+if(NVRHI_WITH_METAL)
+    set(_uaa_has_metal 1)
+    target_sources(nvrhi_uaa_tests PRIVATE uaa_metal.mm)
+    target_link_libraries(nvrhi_uaa_tests PRIVATE ${nvrhi_metal_target})
+    if(APPLE)
+        set_source_files_properties(uaa_metal.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    endif()
+endif()
+
+set(_uaa_has_dx11 0)
+if(NVRHI_WITH_DX11)
+    set(_uaa_has_dx11 1)
+    target_sources(nvrhi_uaa_tests PRIVATE uaa_d3d11.cpp)
+    target_link_libraries(nvrhi_uaa_tests PRIVATE ${nvrhi_d3d11_target})
+endif()
+
+set(_uaa_has_dx12 0)
+if(NVRHI_WITH_DX12)
+    set(_uaa_has_dx12 1)
+    target_sources(nvrhi_uaa_tests PRIVATE uaa_d3d12.cpp)
+    target_link_libraries(nvrhi_uaa_tests PRIVATE ${nvrhi_d3d12_target})
+endif()
+
+target_compile_definitions(nvrhi_uaa_tests PRIVATE
+    UAA_CPU_ONLY=0
+    UAA_NVRHI_SHARED=$<BOOL:${NVRHI_BUILD_SHARED}>
+    UAA_WITH_VALIDATION=$<BOOL:${NVRHI_WITH_VALIDATION}>
+    UAA_WITH_VULKAN=${_uaa_has_vulkan}
+    UAA_WITH_METAL=${_uaa_has_metal}
+    UAA_WITH_DX11=${_uaa_has_dx11}
+    UAA_WITH_D3D11=${_uaa_has_dx11}
+    UAA_WITH_DX12=${_uaa_has_dx12}
+    UAA_WITH_D3D12=${_uaa_has_dx12}
+    UAA_SHADER_DIR="${_uaa_shader_dir}"
+    UAA_NVRHI_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    UAA_NVRHI_BINARY_DIR="${PROJECT_BINARY_DIR}"
+    UAA_BUILD_CONFIG="${_uaa_build_config}")
+
+set_target_properties(nvrhi_uaa_tests PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    FOLDER "NVRHI/Tests")
+
+function(nvrhi_uaa_register_backend_tests backend_name)
+    add_test(
+        NAME "uaa_${backend_name}_raw"
+        COMMAND nvrhi_uaa_tests
+            --backend "${backend_name}"
+            --validation off
+            --exclude-tag stress
+            --exclude-tag destructive
+            --exclude-tag package
+            --exclude-tag isolated)
+    set_tests_properties("uaa_${backend_name}_raw" PROPERTIES
+        LABELS "uaa;${backend_name};raw"
+        TIMEOUT 180
+        SKIP_RETURN_CODE 77)
+
+    if(NVRHI_WITH_VALIDATION)
+        set(_uaa_native_val_flag --native-validation on)
+        add_test(
+            NAME "uaa_${backend_name}_validation"
+            COMMAND nvrhi_uaa_tests
+                --backend "${backend_name}"
+                --validation on
+                ${_uaa_native_val_flag}
+                --exclude-tag stress
+                --exclude-tag destructive
+                --exclude-tag package
+            --exclude-tag isolated)
+        set_tests_properties("uaa_${backend_name}_validation" PROPERTIES
+            LABELS "uaa;${backend_name};validation"
+            TIMEOUT 180
+            SKIP_RETURN_CODE 77)
+        if("${backend_name}" STREQUAL "metal")
+            set_tests_properties("uaa_${backend_name}_validation" PROPERTIES
+                ENVIRONMENT "MTL_DEBUG_LAYER=1")
+        endif()
+    endif()
+
+    add_test(
+        NAME "uaa_${backend_name}_shader_rejection"
+        COMMAND nvrhi_uaa_tests
+            --backend "${backend_name}"
+            --validation off
+            --filter SHD.InvalidBinary)
+    set_tests_properties("uaa_${backend_name}_shader_rejection" PROPERTIES
+        LABELS "uaa;${backend_name};isolated"
+        TIMEOUT 60
+        SKIP_RETURN_CODE 77)
+
+endfunction()
+
+if(NVRHI_WITH_METAL)
+    nvrhi_uaa_register_backend_tests(metal)
+endif()
+
+if(NVRHI_WITH_VULKAN)
+    nvrhi_uaa_register_backend_tests(vulkan)
+endif()
+
+if(NVRHI_WITH_DX11)
+    nvrhi_uaa_register_backend_tests(d3d11)
+endif()
+
+if(NVRHI_WITH_DX12)
+    nvrhi_uaa_register_backend_tests(d3d12)
+endif()
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_FOUND)
     set(_uaa_python "${Python3_EXECUTABLE}")
