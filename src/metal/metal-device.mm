@@ -142,7 +142,6 @@ namespace nvrhi::metal
         return Object((__bridge void*)m_Context.queue);
     }
 
-    // [UAA] - START - adapter memory size
     uint64_t Device::getNativeDeviceMemorySize()
     {
         return m_Context.device.recommendedMaxWorkingSetSize;
@@ -152,9 +151,7 @@ namespace nvrhi::metal
     {
         return m_Context.device.currentAllocatedSize;
     }
-    // [UAA] - END
 
-    // [UAA] - START - mapped buffer write flush
     uint64_t Device::getMappedBufferFlushAlignment()
     {
         return 256;
@@ -184,7 +181,6 @@ namespace nvrhi::metal
 
         return true;
     }
-    // [UAA] - END
 
     Object Device::getNativeQueue(ObjectType objectType, CommandQueue queue)
     {
@@ -313,8 +309,7 @@ namespace nvrhi::metal
             descriptor.arrayLength = d.arraySize / 6;
         }
 
-        // A virtual texture defers its Metal object to bindTextureMemory, which places it
-        // on a heap at the offset the caller chose from the requirements below.
+        // Create the Metal texture when bindTextureMemory supplies a heap and offset.
         if (d.isVirtual)
         {
             Texture* result = new Texture();
@@ -681,14 +676,12 @@ namespace nvrhi::metal
         result->desc = desc;
         result->framebufferInfo = FramebufferInfoEx(desc);
 
-        // [UAA] - START - retain attachments as in the Vulkan framebuffer
         for (const auto& attachment : desc.colorAttachments)
             result->resources.push_back(attachment.texture);
         if (desc.depthAttachment.valid())
             result->resources.push_back(desc.depthAttachment.texture);
         if (desc.shadingRateAttachment.valid())
             result->resources.push_back(desc.shadingRateAttachment.texture);
-        // [UAA] - END
 
         return FramebufferHandle::Create(result);
     }
@@ -755,8 +748,7 @@ namespace nvrhi::metal
         }
     }
 
-    // Verifies that a permanently pinned resource accepts a descriptor table write of
-    // the given item's use, like the Vulkan backend does inside writeDescriptorTable.
+    // Check the descriptor's required state against the resource's permanent state.
     static void verifyPermanentBindingState(const BindingSetItem& item, Context& context)
     {
         switch (item.type)
@@ -821,8 +813,7 @@ namespace nvrhi::metal
             if (item.type != ResourceType::None)
                 descriptorTable->slots[space][item.slot] = item;
 
-            // A slot written into a permanently pinned resource verifies the pin covers the
-            // written use, the check the Vulkan backend makes at the same place.
+            // Check the descriptor type against the resource's permanent state.
             if (item.resourceHandle)
                 verifyPermanentBindingState(item, getContext());
 

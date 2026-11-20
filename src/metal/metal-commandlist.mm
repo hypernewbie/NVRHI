@@ -57,8 +57,7 @@ namespace nvrhi::metal
             if ( info.hasBlue ) values[valueIndex++] = color.b;
             if ( info.hasAlpha ) values[valueIndex++] = color.a;
 
-            // A BGRA texel stores blue before red, so the memory order of the first two
-            // colour components swaps while the logical clear colour stays RGBA.
+            // BGRA texels store blue before red; the clear colour is RGBA.
             if (format == Format::BGRA8_UNORM || format == Format::SBGRA8_UNORM || format == Format::BGRA4_UNORM)
                 std::swap(values[0], values[2]);
 
@@ -207,7 +206,7 @@ namespace nvrhi::metal
 
     namespace
     {
-        // The shape a table slot's resource type takes in the Metal argument namespaces.
+        // Map descriptor types to Metal argument namespaces.
         bool getBindlessArrayShape(ResourceType type, ResourceKind& kind, bool& writeable)
         {
             switch (type)
@@ -368,8 +367,7 @@ namespace nvrhi::metal
 
     // ------------------------------------------------------------------ Transfers
 
-    // Verifies that a permanently pinned resource is usable for the state an operation
-    // requires, the diagnostic the Vulkan backend produces from its state tracker.
+    // Check the required state against the resource's permanent state.
     void CommandList::verifyPermanentState(TextureStateExtension* texture, ResourceStates state)
     {
         if (texture->permanentState != ResourceStates::Unknown)
@@ -1209,9 +1207,6 @@ namespace nvrhi::metal
     void CommandList::endMarker()
     {
     }
-
-    // Metal tracks the hazards on its own, so the state tracking calls only keep the
-    // bookkeeping that the validation layer and the callers expect to see.
 
     void CommandList::setEnableAutomaticBarriers(bool enable)
     {

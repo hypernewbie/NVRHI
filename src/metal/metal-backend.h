@@ -52,9 +52,8 @@ namespace nvrhi::metal
     class BindingSet;
     class InputLayout;
 
-    // Metal shares one buffer index namespace between the stage-in vertex attributes and the
-    // shader buffer arguments. The vertex attributes take the high indices above the range the
-    // NVRHI vertex buffer slots use, so the translated buffers keep the low indices.
+    // Vertex attributes and shader buffers share Metal's buffer index namespace.
+    // Reserve the upper indices for vertex buffers.
     constexpr uint32_t c_VertexBufferBase = 16;
 
     struct Context
@@ -92,8 +91,7 @@ namespace nvrhi::metal
         void* mappedMemory = nullptr;
         bool isCPUVisible = false;
 
-        // [UAA] Texture-buffer views of this buffer for typed buffer bindings, keyed
-        // by format, byte offset and byte size like the views of a Vulkan texture.
+        // Typed buffer views, keyed by format, byte offset and size.
         std::map<std::tuple<Format, uint64_t, uint64_t>, id<MTLTexture>> typedViews;
 
         const BufferDesc& getDesc() const override { return desc; }
@@ -101,7 +99,7 @@ namespace nvrhi::metal
         Object getNativeObject(ObjectType objectType) override;
     };
 
-    // [UAA] Returns a texture-buffer view of the buffer range for a typed buffer binding,
+    // Returns a texture-buffer view of the buffer range for a typed buffer binding,
     // creating and caching it on the buffer on first use.
     id<MTLTexture> getTypedBufferView(Context& context, Buffer* buffer, Format format, uint64_t byteOffset, uint64_t byteSize);
 
@@ -132,8 +130,7 @@ namespace nvrhi::metal
         // A virtual texture keeps its descriptor until bindTextureMemory places it on a heap.
         MTLTextureDescriptor* descriptor = nil;
 
-        // [UAA] Subresource views, keyed by the range, dimension, format and channel mapping
-        // of the binding that asked for them and reused like the views of a Vulkan texture.
+        // Subresource views keyed by range, dimension, format and channel mapping.
         struct ViewKey
         {
             uint32_t baseMipLevel = 0;
@@ -157,7 +154,7 @@ namespace nvrhi::metal
         Object getNativeView(ObjectType objectType, Format format, TextureSubresourceSet subresources, TextureDimension dimension, bool isReadOnlyDSV = false,
             std::optional<ComponentMapping> overrideComponentMapping = std::nullopt) override;
 
-        // [UAA] Returns a view of the subresources as the given dimension, format and channel
+        // Returns a view of the subresources as the given dimension, format and channel
         // mapping, creating and caching it on first use. The entire texture with its own format
         // and an identity mapping returns the base texture.
         id<MTLTexture> getSubresourceView(const TextureSubresourceSet& subresources, TextureDimension dimension, Format format, ComponentMapping componentMapping);
@@ -192,9 +189,8 @@ namespace nvrhi::metal
         std::string source;
         TranslatedShader translated;
 
-        // The original SPIR-V words and, for a bindless shader, one translation per
-        // descriptor table capacity. The runtime sized arrays are sized by the table,
-        // so the function cannot be compiled before the capacity is known.
+        // Bindless shaders are compiled per table capacity because their SPIR-V
+        // contains runtime-sized arrays.
         struct BindlessTranslation
         {
             TranslatedShader translated;
@@ -207,9 +203,8 @@ namespace nvrhi::metal
         void getBytecode(const void** ppBytecode, size_t* pSize) const override;
         Object getNativeObject(ObjectType objectType) override;
 
-        // [UAA] Returns the translation and compiled function for the given table
-        // capacity, translating and compiling on first use. Returns the eager
-        // translation for a shader without runtime sized arrays.
+        // Compile and cache bindless shaders by table capacity.
+        // Returns nullptr for shaders without runtime-sized arrays.
         const BindlessTranslation* getTranslationForCapacity(Context& context, uint32_t capacity) const;
     };
 
@@ -227,7 +222,7 @@ namespace nvrhi::metal
     public:
         FramebufferDesc desc;
         FramebufferInfoEx framebufferInfo;
-        std::vector<ResourceHandle> resources; // [UAA] Own the attachments referenced by desc.
+        std::vector<ResourceHandle> resources; // Own the attachments referenced by desc.
 
         const FramebufferDesc& getDesc() const override { return desc; }
         const FramebufferInfoEx& getFramebufferInfo() const override { return framebufferInfo; }
@@ -264,8 +259,7 @@ namespace nvrhi::metal
     public:
         BindingLayoutHandle layout;
         uint32_t capacity = 0;
-        // One slot array per register space of the layout, like the bindings of a
-        // Vulkan descriptor set that each take their own array elements.
+        // Each register space has its own array of slots.
         std::vector<std::vector<BindingSetItem>> slots;
 
         const BindingSetDesc* getDesc() const override { return nullptr; }
@@ -472,8 +466,7 @@ namespace nvrhi::metal
         ComputeState m_CurrentComputeState;
         GraphicsState m_CurrentGraphicsState;
 
-        // Permanent resource states pinned by descriptor table writes, applied when the
-        // list is submitted like the Vulkan backend applies them.
+        // Apply permanent resource states when the command list is submitted.
         std::vector<std::pair<TextureStateExtension*, ResourceStates>> m_PermanentTextureStates;
         std::vector<std::pair<BufferStateExtension*, ResourceStates>> m_PermanentBufferStates;
 
@@ -570,14 +563,11 @@ namespace nvrhi::metal
         Object getNativeDevice() override;
         Object getNativeCommandQueue() override;
 
-        // [UAA] adapter memory size
         uint64_t getNativeDeviceMemorySize() override;
         uint64_t getNativeAllocatedSize() override;
 
-        // [UAA] - START - mapped buffer write flush
         uint64_t getMappedBufferFlushAlignment() override;
         bool flushMappedBuffer(IBuffer* buffer, uint64_t offset, uint64_t size) override;
-        // [UAA] - END
 
     private:
         Context m_Context;

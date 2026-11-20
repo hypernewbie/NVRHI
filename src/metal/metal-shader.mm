@@ -392,9 +392,8 @@ namespace nvrhi::metal
             return translation ? &translation->translated : nullptr;
         }
 
-        // A bindless shader can run without a table bound, like the Vulkan backend builds
-        // the pipeline without the set; the array is never accessed then. A minimal
-        // capacity keeps the runtime sized array compilable.
+        // Compile with a capacity of one when no table layout is provided.
+        // The shader must not access an unbound array.
         const Shader::BindlessTranslation* translation = shader->getTranslationForCapacity(context, 1);
         return translation ? &translation->translated : nullptr;
     }
@@ -415,7 +414,7 @@ namespace nvrhi::metal
             return translation ? translation->function : nil;
         }
 
-        // The same minimal fallback the translation resolution makes.
+        // Match the fallback capacity used by resolveTranslation.
         const Shader::BindlessTranslation* translation = shader->getTranslationForCapacity(context, 1);
         return translation ? translation->function : nil;
     }

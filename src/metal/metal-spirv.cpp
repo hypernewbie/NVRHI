@@ -133,8 +133,7 @@ namespace nvrhi::metal
             collect(resources.storage_images, ResourceKind::Texture, true);
             collect(resources.separate_samplers, ResourceKind::Sampler, false);
 
-            // A read-only storage buffer is a structured buffer SRV, so its array must not
-            // take the shape of the read-write ones when a table slot is matched to it.
+            // Distinguish read-only storage buffers from UAVs when matching table slots.
             for (auto& entry : entries)
             {
                 if (entry.kind == ResourceKind::Buffer && compiler.get_decoration(entry.id, spv::DecorationNonWritable))
@@ -153,8 +152,7 @@ namespace nvrhi::metal
                 return false;
             }
 
-            // A runtime sized array has no size until the descriptor table capacity is
-            // known, so a module that uses one keeps its function deferred to the pipeline.
+            // Runtime-sized arrays require the table capacity at pipeline creation.
             bool usesBindless = false;
             for (auto& entry : entries)
             {
