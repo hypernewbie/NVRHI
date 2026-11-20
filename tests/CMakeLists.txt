@@ -31,6 +31,4 @@ if(NVRHI_WITH_METAL)
 endif()
 # [UAA] - END
 
-# [UAA] - START
-add_subdirectory(uaa)
-# [UAA] - END
+add_subdirectory(uaa) # [UAA]

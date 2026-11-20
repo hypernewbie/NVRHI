@@ -1,4 +1,4 @@
-// [UAA] Metal framebuffers keep their attachments alive independently of the caller.
+// Metal framebuffers retain their attachments.
 #include <nvrhi/metal.h>
 #include <cstdio>
 
