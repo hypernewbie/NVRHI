@@ -30,3 +30,7 @@ if(NVRHI_WITH_METAL)
     add_test(NAME metal_framebuffer COMMAND nvrhi_metal_framebuffer)
 endif()
 # [UAA] - END
+
+# [UAA] - START
+add_subdirectory(uaa)
+# [UAA] - END
