@@ -24,6 +24,7 @@
 
 #include <nvrhi/validation.h>
 #include <unordered_set>
+#include <mutex> // [UAA] - mapped buffer tracking
 
 namespace nvrhi::validation
 {
@@ -298,6 +299,7 @@ namespace nvrhi::validation
         // [UAA] - START - mapped buffer tracking
         // The buffers that are mapped, so a second map of the same buffer is rejected.
         std::unordered_set<IBuffer*> m_MappedBuffers;
+        std::mutex m_MappedBuffersMutex;
         // [UAA] - END
 
         void error(const std::string& messageText) const;

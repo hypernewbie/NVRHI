@@ -510,6 +510,7 @@ namespace nvrhi::validation
             return nullptr;
         }
 
+        std::lock_guard<std::mutex> lock(m_MappedBuffersMutex);
         if (m_MappedBuffers.find(b) != m_MappedBuffers.end())
         {
             std::stringstream ss;
@@ -534,6 +535,7 @@ namespace nvrhi::validation
             return;
         }
 
+        std::lock_guard<std::mutex> lock(m_MappedBuffersMutex);
         if (m_MappedBuffers.erase(b) == 0)
         {
             std::stringstream ss;

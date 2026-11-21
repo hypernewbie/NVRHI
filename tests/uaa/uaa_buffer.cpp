@@ -25,10 +25,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace nvrhi::uaa
@@ -497,6 +499,46 @@ namespace nvrhi::uaa
                 dev->unmapBuffer(readBuf);
                 UAA_CHECK(guard.errorCount() > 0, "Expected validation error when unmapping an unmapped buffer");
             }
+        }
+
+        // Maps independent buffers concurrently through the validation layer.
+        void testBufMapConcurrent(TestContext& ctx)
+        {
+            TestFixture& fix = requireFixture(ctx);
+            if (!fix.isValidationActive())
+                ctx.skip("Requires NVRHI validation layer");
+
+            nvrhi::IDevice* dev = fix.device();
+            constexpr size_t threadCount = 8;
+            std::array<nvrhi::BufferHandle, threadCount> buffers;
+            for (auto& buffer : buffers)
+            {
+                buffer = dev->createBuffer(nvrhi::BufferDesc().setByteSize(256)
+                    .setCpuAccess(nvrhi::CpuAccessMode::Write).setDebugName("concurrent_map"));
+                UAA_CHECK(buffer != nullptr, "Failed to create concurrent map buffer");
+            }
+
+            std::atomic<bool> failed{false};
+            std::vector<std::thread> threads;
+            for (size_t i = 0; i < threadCount; ++i)
+            {
+                threads.emplace_back([&, i]() {
+                    for (unsigned iteration = 0; iteration < 500; ++iteration)
+                    {
+                        void* ptr = dev->mapBuffer(buffers[i], nvrhi::CpuAccessMode::Write);
+                        if (!ptr)
+                        {
+                            failed = true;
+                            return;
+                        }
+                        std::memset(ptr, int(i), 256);
+                        dev->unmapBuffer(buffers[i]);
+                    }
+                });
+            }
+            for (auto& thread : threads)
+                thread.join();
+            UAA_CHECK(!failed.load(), "Concurrent map failed");
         }
 
         // Tests volatile constant buffer versioning across multiple dispatches and blocked queue submissions.
@@ -1357,6 +1399,7 @@ namespace nvrhi::uaa
     UAA_REGISTER_TEST("BUF.Clear", "core", testBufClear);
     UAA_REGISTER_TEST("BUF.Map", "core", testBufMap);
     UAA_REGISTER_TEST("BUF.MapInvalid", "core,validation", testBufMapInvalid);
+    UAA_REGISTER_TEST("BUF.MapConcurrent", "core,validation", testBufMapConcurrent);
     UAA_REGISTER_TEST("BUF.VolatileConstants", "core", testBufVolatileConstants);
     UAA_REGISTER_TEST("BUF.StructuredRaw", "core", testBufStructuredRaw);
     UAA_REGISTER_TEST("BUF.TypedViews", "core", testBufTypedViews);
