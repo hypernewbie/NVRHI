@@ -1654,10 +1654,6 @@ namespace nvrhi::uaa
         void testGfxMsaa(TestContext& ctx)
         {
             TestFixture& fix = requireFixture(ctx);
-            if (fix.api() == nvrhi::GraphicsAPI::METAL)
-            {
-                ctx.skip("The Metal NVRHI backend does not create Texture2DMS resources");
-            }
             nvrhi::IDevice* dev = fix.device();
 
             nvrhi::TextureHandle msaaTex = createColorTarget(ctx, dev, 64, 64, nvrhi::Format::RGBA8_UNORM, "gfx_msaa_src", 1, 1, 4);

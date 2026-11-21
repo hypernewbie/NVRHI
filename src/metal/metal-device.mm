@@ -285,6 +285,8 @@ namespace nvrhi::metal
         case TextureDimension::Texture1D:      textureType = MTLTextureType1D; break;
         case TextureDimension::Texture1DArray: textureType = MTLTextureType1DArray; break;
         case TextureDimension::Texture2D:      textureType = MTLTextureType2D; break;
+        case TextureDimension::Texture2DMS:    textureType = MTLTextureType2DMultisample; break;
+        case TextureDimension::Texture2DMSArray: textureType = MTLTextureType2DMultisampleArray; break;
         case TextureDimension::Texture2DArray: textureType = MTLTextureType2DArray; break;
         case TextureDimension::Texture3D:      textureType = MTLTextureType3D; break;
         case TextureDimension::TextureCube:    textureType = MTLTextureTypeCube; break;
@@ -292,6 +294,50 @@ namespace nvrhi::metal
         default:
             m_Context.error("createTexture: unsupported texture dimension");
             return nullptr;
+        }
+
+        // A sample count above one needs one of the multisample texture types,
+        // and the multisample dimensions are those types on their own.
+        if (d.sampleCount > 1)
+        {
+            if (d.dimension == TextureDimension::Texture2D || d.dimension == TextureDimension::Texture2DMS)
+                textureType = MTLTextureType2DMultisample;
+            else if (d.dimension == TextureDimension::Texture2DArray || d.dimension == TextureDimension::Texture2DMSArray)
+                textureType = MTLTextureType2DMultisampleArray;
+            else
+            {
+                m_Context.error("createTexture: a multisample texture must be 2D");
+                return nullptr;
+            }
+        }
+
+        if (textureType == MTLTextureType2DMultisample || textureType == MTLTextureType2DMultisampleArray)
+        {
+            // Metal allows no mipmaps on a multisample texture, and the sample count
+            // has to be one the device supports.
+            if (d.sampleCount <= 1)
+            {
+                m_Context.error("createTexture: a multisample texture needs a sample count above one");
+                return nullptr;
+            }
+
+            if (d.mipLevels > 1)
+            {
+                m_Context.error("createTexture: a multisample texture can have only one mip level");
+                return nullptr;
+            }
+
+            if (textureType == MTLTextureType2DMultisample && d.arraySize > 1)
+            {
+                m_Context.error("createTexture: a 2D multisample texture can have only one array slice");
+                return nullptr;
+            }
+
+            if (![m_Context.device supportsTextureSampleCount:d.sampleCount])
+            {
+                m_Context.error("createTexture: the sample count is not supported by the device");
+                return nullptr;
+            }
         }
 
         MTLTextureUsage usage = 0;
@@ -722,26 +768,175 @@ namespace nvrhi::metal
 
     TimerQueryHandle Device::createTimerQuery()
     {
-        return TimerQueryHandle::Create(new TimerQuery());
+        // The counter sample buffer is created on the first timer query, so a device
+        // that never times its work allocates nothing.
+        if (!m_TimerQueryPoolInitAttempted)
+        {
+            if (!initTimerQueryPool())
+            {
+                m_Context.error("createTimerQuery: the device supports no timestamp counters");
+                return nullptr;
+            }
+        }
+
+        std::lock_guard< std::mutex > lock(m_Mutex);
+
+        if (m_FreeTimerQueryIndices.empty())
+        {
+            m_Context.error("createTimerQuery: no free timer query slot is left, increase the pool size");
+            return nullptr;
+        }
+
+        TimerQuery* query = new TimerQuery();
+        query->device = this;
+        query->poolIndex = uint32_t(m_FreeTimerQueryIndices.back());
+        m_FreeTimerQueryIndices.pop_back();
+        query->beginSampleIndex = query->poolIndex * 2;
+        query->endSampleIndex = query->poolIndex * 2 + 1;
+        return TimerQueryHandle::Create(query);
     }
 
-    bool Device::pollTimerQuery(ITimerQuery* query)
+    bool Device::initTimerQueryPool()
     {
-        (void)query;
-        return false;
+        m_TimerQueryPoolInitAttempted = true;
+
+        // The samples go at the boundaries of an empty pass, so the device has to
+        // support sampling at a stage boundary.
+        if (![m_Context.device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])
+            return false;
+
+        id<MTLCounterSet> timestampSet = nil;
+        for (id<MTLCounterSet> counterSet in m_Context.device.counterSets)
+        {
+            if ([counterSet.name isEqualToString:MTLCommonCounterSetTimestamp])
+            {
+                timestampSet = counterSet;
+                break;
+            }
+        }
+        if (!timestampSet)
+            return false;
+
+        MTLCounterSampleBufferDescriptor* descriptor = [[MTLCounterSampleBufferDescriptor alloc] init];
+        descriptor.counterSet = timestampSet;
+        // A shared counter sample buffer resolves to zeros on this driver generation,
+        // so the raw samples stay private until the resolve.
+        descriptor.storageMode = MTLStorageModePrivate;
+        descriptor.sampleCount = c_TimerQueryPoolSize * 2;
+
+        NSError* error = nil;
+        m_CounterSampleBuffer = [m_Context.device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+        if (!m_CounterSampleBuffer)
+            return false;
+
+        // The resolved timestamps are read by the CPU after the submission completed,
+        // so the resolve buffer is shared storage.
+        m_CounterResolveBuffer = [m_Context.device newBufferWithLength:c_TimerQueryPoolSize * 2 * sizeof(MTLCounterResultTimestamp)
+            options:MTLResourceStorageModeShared];
+        if (!m_CounterResolveBuffer)
+        {
+            m_CounterSampleBuffer = nil;
+            return false;
+        }
+
+        m_FreeTimerQueryIndices.resize(c_TimerQueryPoolSize);
+        for (uint32_t i = 0; i < c_TimerQueryPoolSize; ++i)
+            m_FreeTimerQueryIndices[i] = int32_t(c_TimerQueryPoolSize - 1 - i);
+
+        return true;
     }
 
-    float Device::getTimerQueryTime(ITimerQuery* query)
+    void Device::releaseTimerQueryIndex(uint32_t poolIndex)
     {
-        TimerQuery* timerQuery = checked_cast<TimerQuery*>(query);
-        return timerQuery ? timerQuery->time : 0.f;
+        std::lock_guard< std::mutex > lock(m_Mutex);
+        m_FreeTimerQueryIndices.push_back(int32_t(poolIndex));
     }
 
-    void Device::resetTimerQuery(ITimerQuery* query)
+    id<MTLTexture> Device::getTimerQuerySampleTarget()
     {
-        TimerQuery* timerQuery = checked_cast<TimerQuery*>(query);
-        if (timerQuery)
-            timerQuery->resolved = false;
+        if (!m_TimerQuerySampleTarget)
+        {
+            MTLTextureDescriptor* descriptor = [[MTLTextureDescriptor alloc] init];
+            descriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
+            descriptor.width = 1;
+            descriptor.height = 1;
+            descriptor.usage = MTLTextureUsageRenderTarget;
+            descriptor.storageMode = MTLStorageModePrivate;
+            m_TimerQuerySampleTarget = [m_Context.device newTextureWithDescriptor:descriptor];
+        }
+
+        return m_TimerQuerySampleTarget;
+    }
+
+    TimerQuery::~TimerQuery()
+    {
+        if (device)
+            device->releaseTimerQueryIndex(poolIndex);
+    }
+
+    bool Device::pollTimerQuery(ITimerQuery* _query)
+    {
+        TimerQuery* query = checked_cast<TimerQuery*>(_query);
+        if (!query || !query->started)
+            return false;
+
+        if (query->resolved)
+            return true;
+
+        // The resolve buffer holds the timestamps of the pair only after the
+        // submission that sampled them completed.
+        {
+            std::lock_guard< std::mutex > lock(m_Completion->mutex);
+            if (m_Completion->lastCompletedSerial < query->serial)
+                return false;
+        }
+
+        const MTLCounterResultTimestamp* results =
+            (const MTLCounterResultTimestamp*)m_CounterResolveBuffer.contents + query->poolIndex * 2;
+
+        // A sample that hit an error reads back as the error value, and a pair that
+        // was sampled but never resolved stays at zero. Both cases report no time.
+        if (results[0].timestamp == MTLCounterErrorValue || results[1].timestamp == MTLCounterErrorValue
+            || results[0].timestamp == 0 || results[1].timestamp == 0)
+        {
+            query->time = 0.f;
+            query->resolved = true;
+            return true;
+        }
+
+        // The timestamps count nanoseconds. The stage boundary samples are not fully
+        // isolated from other encoders, so a negative interval reads as zero.
+        const uint64_t interval = results[1].timestamp > results[0].timestamp
+            ? results[1].timestamp - results[0].timestamp
+            : 0;
+        query->time = float(double(interval) * 1e-9);
+        query->resolved = true;
+        return true;
+    }
+
+    float Device::getTimerQueryTime(ITimerQuery* _query)
+    {
+        TimerQuery* query = checked_cast<TimerQuery*>(_query);
+        if (!query || !query->started)
+            return 0.f;
+
+        while (!pollTimerQuery(query))
+            ;
+
+        query->started = false;
+
+        return query->time;
+    }
+
+    void Device::resetTimerQuery(ITimerQuery* _query)
+    {
+        TimerQuery* query = checked_cast<TimerQuery*>(_query);
+        if (query)
+        {
+            query->started = false;
+            query->resolved = false;
+            query->time = 0.f;
+        }
     }
 
     // ------------------------------------------------------------------ Pipelines
@@ -1124,6 +1319,11 @@ namespace nvrhi::metal
         list->applyPermanentStates();
 
         const uint64_t serial = ++m_LastSubmittedSerial;
+
+        // The timer queries this command list sampled resolve with the serial, so
+        // their results become readable once the submission completed.
+        for (const auto& query : list->takeSampledTimerQueries())
+            query->serial = serial;
         const auto completion = m_Completion;
         id<MTLSharedEvent> submissionEvent = m_SubmissionEvent;
         IMessageCallback* callback = m_Context.messageCallback;
@@ -1312,6 +1512,11 @@ namespace nvrhi::metal
 
             case Feature::VirtualResources:
                 // A virtual texture defers its Metal object to bindTextureMemory on a heap.
+                return true;
+
+            case Feature::ShaderSpecializations:
+                // SPIRV-Cross turns the SPIR-V specialisation constants into Metal
+                // function constants, which the entry function picks up.
                 return true;
 
             default:

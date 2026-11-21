@@ -384,12 +384,6 @@ namespace nvrhi::uaa
 
             if (!resolved)
             {
-                if (fix.api() == nvrhi::GraphicsAPI::METAL)
-                {
-                    UAA_CHECK(!dev->pollTimerQuery(tq), "Metal pollTimerQuery must return false");
-                    UAA_CHECK_EQ(dev->getTimerQueryTime(tq), 0.0f, "Metal getTimerQueryTime must return 0.0f");
-                    ctx.skip("Timer queries not implemented on Metal backend");
-                }
                 UAA_CHECK(false, "Timer query did not resolve within watchdog timeout");
             }
 
@@ -436,26 +430,6 @@ namespace nvrhi::uaa
             UAA_CHECK(!dev->pollTimerQuery(tq), "Newly created timer query must not report resolved");
             UAA_CHECK_EQ(dev->getTimerQueryTime(tq), 0.0f, "Unstarted timer query must return 0.0f");
 
-            if (fix.api() == nvrhi::GraphicsAPI::METAL)
-            {
-                nvrhi::CommandListHandle cmd = dev->createCommandList();
-                UAA_CHECK(cmd != nullptr, "createCommandList returned null");
-
-                cmd->open();
-                cmd->beginTimerQuery(tq);
-                cmd->endTimerQuery(tq);
-                cmd->close();
-
-                fix.submitAndWait(cmd, nvrhi::CommandQueue::Graphics);
-
-                UAA_CHECK(!dev->pollTimerQuery(tq), "Metal pollTimerQuery must return false");
-                UAA_CHECK_EQ(dev->getTimerQueryTime(tq), 0.0f, "Metal getTimerQueryTime must return 0.0f");
-
-                dev->resetTimerQuery(tq);
-                UAA_CHECK(!dev->pollTimerQuery(tq), "Metal pollTimerQuery after reset must return false");
-                UAA_CHECK_EQ(dev->getTimerQueryTime(tq), 0.0f, "Metal getTimerQueryTime after reset must return 0.0f");
-            }
-            else
             {
                 // Run a valid timed pass, resolve, then reset and confirm unresolved state returns cleanly.
                 ComputeCopyAddJob job = buildComputeCopyAddJob(fix, ctx, 1024u, 5u, 0x11u, ctx.seed() ^ 0x505ull);

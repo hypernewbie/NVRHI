@@ -117,6 +117,8 @@ namespace nvrhi::metal
         m_CurrentComputePipeline = nullptr;
         m_CurrentGraphicsPipeline = nullptr;
         m_ReferencedResources.clear();
+        m_SampledTimerQueries.clear();
+        m_PendingCounterResolves.clear();
         m_CommandBuffer = [m_Device->getQueue() commandBuffer];
         m_IsOpen = true;
     }
@@ -124,6 +126,22 @@ namespace nvrhi::metal
     void CommandList::close()
     {
         endEncoder();
+
+        // The deferred resolves run after the last sample, in one blit encoder.
+        if (!m_PendingCounterResolves.empty() && m_Device->getCounterSampleBuffer())
+        {
+            id<MTLBlitCommandEncoder> encoder = getBlitEncoder();
+            for (const auto& query : m_PendingCounterResolves)
+            {
+                [encoder resolveCounters:m_Device->getCounterSampleBuffer()
+                    inRange:NSMakeRange(query->beginSampleIndex, 2)
+                    destinationBuffer:m_Device->getCounterResolveBuffer()
+                    destinationOffset:query->poolIndex * 2 * sizeof(MTLCounterResultTimestamp)];
+            }
+            m_PendingCounterResolves.clear();
+            endEncoder();
+        }
+
         m_IsOpen = false;
     }
 
@@ -1493,14 +1511,56 @@ namespace nvrhi::metal
         (void)numDescs;
     }
 
-    void CommandList::beginTimerQuery(ITimerQuery* query)
+    // Opens and closes an empty render pass that samples a timestamp at one of its
+    // stage boundaries. A render pass attachment is the only sampling point this
+    // driver generation honours; a compute pass attachment resolves to zeros.
+    void CommandList::sampleTimestamp(TimerQuery* query, bool atPassEnd)
     {
-        (void)query;
+        MTLRenderPassDescriptor* passDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+        passDescriptor.colorAttachments[0].texture = m_Device->getTimerQuerySampleTarget();
+        passDescriptor.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+        passDescriptor.colorAttachments[0].storeAction = MTLStoreActionDontCare;
+
+        MTLRenderPassSampleBufferAttachmentDescriptor* attachment = passDescriptor.sampleBufferAttachments[0];
+        attachment.sampleBuffer = m_Device->getCounterSampleBuffer();
+        attachment.startOfVertexSampleIndex = atPassEnd ? MTLCounterDontSample : query->beginSampleIndex;
+        attachment.endOfFragmentSampleIndex = atPassEnd ? query->endSampleIndex : MTLCounterDontSample;
+
+        id<MTLRenderCommandEncoder> encoder = [m_CommandBuffer renderCommandEncoderWithDescriptor:passDescriptor];
+        [encoder endEncoding];
     }
 
-    void CommandList::endTimerQuery(ITimerQuery* query)
+    void CommandList::beginTimerQuery(ITimerQuery* _query)
     {
-        (void)query;
+        TimerQuery* query = checked_cast<TimerQuery*>(_query);
+        if (!query || !m_CommandBuffer || !m_Device->getCounterSampleBuffer())
+            return;
+
+        // The sample goes at the start of an empty pass, so it measures everything
+        // the command buffer runs between begin and end.
+        endEncoder();
+
+        sampleTimestamp(query, false);
+
+        query->resolved = false;
+        m_SampledTimerQueries.push_back(RefCountPtr<TimerQuery>(query));
+    }
+
+    void CommandList::endTimerQuery(ITimerQuery* _query)
+    {
+        TimerQuery* query = checked_cast<TimerQuery*>(_query);
+        if (!query || !m_CommandBuffer || !m_Device->getCounterSampleBuffer())
+            return;
+
+        endEncoder();
+
+        sampleTimestamp(query, true);
+
+        // The resolve waits until the command list closes, because this driver
+        // generation stops taking samples in a command buffer once a resolve runs.
+        m_PendingCounterResolves.push_back(RefCountPtr<TimerQuery>(query));
+
+        query->started = true;
     }
 
     void CommandList::beginMarker(const char* name)

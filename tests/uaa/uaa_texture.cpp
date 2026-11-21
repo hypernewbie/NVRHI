@@ -1209,10 +1209,6 @@ namespace nvrhi::uaa
         void testTexResolve(TestContext& ctx)
         {
             TestFixture& fix = requireFixture(ctx);
-            if (fix.api() == nvrhi::GraphicsAPI::METAL)
-            {
-                ctx.skip("The Metal NVRHI backend does not create Texture2DMS resources");
-            }
             nvrhi::IDevice* dev = fix.device();
 
             nvrhi::TextureHandle msaaTex = dev->createTexture(

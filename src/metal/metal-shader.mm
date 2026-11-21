@@ -40,6 +40,32 @@ namespace nvrhi::metal
     // sized arrays live.
     constexpr uint32_t c_BindlessDescriptorSet = 0;
 
+    // Fetches the entry function of a library. The function constants are resolved
+    // with an empty list, so every specialisation constant keeps its default. Metal
+    // rejects a pipeline that a function with unresolved constants builds.
+    static id<MTLFunction> resolveEntryFunction(Context& context, id<MTLLibrary> library, const ShaderDesc& d)
+    {
+        MTLFunctionConstantValues* constantValues = [[MTLFunctionConstantValues alloc] init];
+        NSError* nsError = nil;
+
+        id<MTLFunction> function = [library newFunctionWithName:@(d.entryName.c_str()) constantValues:constantValues error:&nsError];
+        if (!function)
+        {
+            // SPIRV-Cross renames the entry point when it collides with a reserved name.
+            const std::string renamedEntry = d.entryName + "0";
+            function = [library newFunctionWithName:@(renamedEntry.c_str()) constantValues:constantValues error:&nsError];
+        }
+
+        if (!function)
+        {
+            context.error("resolveEntryFunction: the entry point '" + d.entryName + "' is missing in '" + d.debugName + "': "
+                + std::string(nsError ? nsError.localizedDescription.UTF8String : "unknown error"));
+            return nil;
+        }
+
+        return function;
+    }
+
     // Compiles the entry point of a translation, including the reserved entry rename.
     static id<MTLFunction> compileEntryFunction(Context& context, const TranslatedShader& translated, const ShaderDesc& d)
     {
@@ -52,21 +78,7 @@ namespace nvrhi::metal
             return nil;
         }
 
-        // SPIRV-Cross renames the entry point when it collides with a reserved name.
-        id<MTLFunction> function = [library newFunctionWithName:@(d.entryName.c_str())];
-        if (!function)
-        {
-            const std::string renamedEntry = d.entryName + "0";
-            function = [library newFunctionWithName:@(renamedEntry.c_str())];
-        }
-
-        if (!function)
-        {
-            context.error("compileEntryFunction: the entry point '" + d.entryName + "' is missing in '" + d.debugName + "'");
-            return nil;
-        }
-
-        return function;
+        return resolveEntryFunction(context, library, d);
     }
 
     const Shader::BindlessTranslation* Shader::getTranslationForCapacity(Context& context, uint32_t capacity) const
@@ -340,19 +352,9 @@ namespace nvrhi::metal
         }
 
         // SPIRV-Cross renames the entry point when it collides with a reserved name.
-        id<MTLFunction> function = [library newFunctionWithName:@(d.entryName.c_str())];
+        id<MTLFunction> function = resolveEntryFunction(m_Context, library, d);
         if (!function)
-        {
-            const std::string renamedEntry = d.entryName + "0";
-            function = [library newFunctionWithName:@(renamedEntry.c_str())];
-        }
-
-        if (!function)
-        {
-            m_Context.error("createShader: the entry point '" + d.entryName + "' is missing in '" + d.debugName + "'");
-            delete shader;
             return nullptr;
-        }
 
         shader->library = library;
         shader->function = function;
@@ -361,13 +363,117 @@ namespace nvrhi::metal
         return ShaderHandle::Create(shader);
     }
 
-    ShaderHandle Device::createShaderSpecialization(IShader* baseShader, const ShaderSpecialization* constants, uint32_t numConstants)
+    ShaderHandle Device::createShaderSpecialization(IShader* _baseShader, const ShaderSpecialization* constants, uint32_t numConstants)
     {
-        (void)baseShader;
-        (void)constants;
-        (void)numConstants;
-        m_Context.error("createShaderSpecialization: specialization constants are not supported by the Metal backend");
-        return nullptr;
+        Shader* baseShader = checked_cast<Shader*>(_baseShader);
+        if (!baseShader || !constants || numConstants == 0)
+        {
+            m_Context.error("createShaderSpecialization: the base shader and the constants are required");
+            return nullptr;
+        }
+
+        // A bindless shader gets its function per table capacity, so its constants
+        // cannot fold into one function.
+        if (baseShader->translated.usesBindless)
+        {
+            m_Context.error("createShaderSpecialization: a shader with a runtime sized array cannot be specialised");
+            return nullptr;
+        }
+
+        // The constants of a specialisable function are read from the plain entry
+        // function, because a function that resolved its constants reports none.
+        id<MTLFunction> declarationFunction = [baseShader->library newFunctionWithName:@(baseShader->desc.entryName.c_str())];
+        if (!declarationFunction)
+        {
+            const std::string renamedEntry = baseShader->desc.entryName + "0";
+            declarationFunction = [baseShader->library newFunctionWithName:@(renamedEntry.c_str())];
+        }
+        if (!declarationFunction)
+        {
+            m_Context.error("createShaderSpecialization: the entry point is missing in '" + baseShader->desc.debugName + "'");
+            return nullptr;
+        }
+
+        // The translated shader declares every specialisation constant as a Metal
+        // function constant, and the entry function picks the values from this list.
+        MTLFunctionConstantValues* constantValues = [[MTLFunctionConstantValues alloc] init];
+        for (uint32_t i = 0; i < numConstants; ++i)
+        {
+            const ShaderSpecialization& constant = constants[i];
+
+            MTLFunctionConstant* declaration = nil;
+            for (MTLFunctionConstant* candidate in declarationFunction.functionConstantsDictionary.allValues)
+            {
+                if (candidate.index == constant.constantID)
+                {
+                    declaration = candidate;
+                    break;
+                }
+            }
+
+            if (!declaration)
+            {
+                m_Context.error("createShaderSpecialization: the shader declares no specialisation constant " + std::to_string(constant.constantID));
+                return nullptr;
+            }
+
+            switch (declaration.type)
+            {
+            case MTLDataTypeUInt:
+                [constantValues setConstantValue:&constant.value.u type:MTLDataTypeUInt atIndex:constant.constantID];
+                break;
+            case MTLDataTypeInt:
+                [constantValues setConstantValue:&constant.value.i type:MTLDataTypeInt atIndex:constant.constantID];
+                break;
+            case MTLDataTypeFloat:
+                [constantValues setConstantValue:&constant.value.f type:MTLDataTypeFloat atIndex:constant.constantID];
+                break;
+            case MTLDataTypeBool:
+            {
+                const BOOL value = constant.value.u != 0;
+                [constantValues setConstantValue:&value type:MTLDataTypeBool atIndex:constant.constantID];
+                break;
+            }
+            default:
+                // Half constants have no place in the four byte value union, like
+                // on the other backends.
+                m_Context.error("createShaderSpecialization: the specialisation constant " + std::to_string(constant.constantID)
+                    + " has an unsupported type");
+                return nullptr;
+            }
+        }
+
+        NSError* nsError = nil;
+        id<MTLFunction> function = [baseShader->library newFunctionWithName:@(baseShader->desc.entryName.c_str())
+            constantValues:constantValues
+            error:&nsError];
+
+        // SPIRV-Cross renames the entry point when it collides with a reserved name.
+        if (!function)
+        {
+            const std::string renamedEntry = baseShader->desc.entryName + "0";
+            function = [baseShader->library newFunctionWithName:@(renamedEntry.c_str())
+                constantValues:constantValues
+                error:&nsError];
+        }
+
+        if (!function)
+        {
+            m_Context.error("createShaderSpecialization: failed to specialise '" + baseShader->desc.debugName + "': "
+                + std::string(nsError ? nsError.localizedDescription.UTF8String : "unknown error"));
+            return nullptr;
+        }
+
+        Shader* shader = new Shader();
+        // The specialised shader holds the base shader, which owns the library.
+        shader->baseShader = baseShader->baseShader ? baseShader->baseShader : ShaderHandle(_baseShader);
+        shader->desc = baseShader->desc;
+        shader->spirv = baseShader->spirv;
+        shader->translated = baseShader->translated;
+        shader->library = baseShader->library;
+        shader->function = function;
+        shader->source = baseShader->source;
+        return ShaderHandle::Create(shader);
     }
 
     ShaderLibraryHandle Device::createShaderLibrary(const void* binary, size_t binarySize)
@@ -511,6 +617,7 @@ namespace nvrhi::metal
         MTLRenderPipelineDescriptor* pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
         pipelineDescriptor.vertexFunction = vertexFunction;
         pipelineDescriptor.fragmentFunction = pixelFunction;
+        pipelineDescriptor.rasterSampleCount = std::max(1u, fbinfo.sampleCount);
 
         const InputLayout* inputLayout = checked_cast<InputLayout*>(desc.inputLayout.Get());
         if (inputLayout && inputLayout->getNumAttributes() > 0)

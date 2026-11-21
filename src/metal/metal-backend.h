@@ -62,6 +62,9 @@ namespace nvrhi::metal
     // Reserve the upper indices for vertex buffers.
     constexpr uint32_t c_VertexBufferBase = 16;
 
+    // The number of timer queries the counter sample buffer holds sample pairs for.
+    constexpr uint32_t c_TimerQueryPoolSize = 256;
+
     struct Context
     {
         id<MTLDevice> device = nil;
@@ -197,6 +200,8 @@ namespace nvrhi::metal
         id<MTLFunction> function = nil;
         std::string source;
         TranslatedShader translated;
+        // A specialised shader holds the base shader, which owns the library.
+        ShaderHandle baseShader;
 
         // Bindless shaders are compiled per table capacity because their SPIR-V
         // contains runtime-sized arrays.
@@ -338,11 +343,21 @@ namespace nvrhi::metal
         bool signalled = false;
     };
 
+    // A timer query owns one pair of samples in the device's counter sample buffer.
     class TimerQuery : public RefCounter<ITimerQuery>
     {
     public:
+        Device* device = nullptr;
+        uint32_t poolIndex = 0;
+        uint32_t beginSampleIndex = 0;
+        uint32_t endSampleIndex = 0;
+        // The serial of the submission that sampled the pair last.
+        uint64_t serial = 0;
         float time = 0.f;
+        bool started = false;
         bool resolved = false;
+
+        ~TimerQuery() override;
     };
 
     class CommandList : public RefCounter<ICommandList>
@@ -428,12 +443,20 @@ namespace nvrhi::metal
             return std::move( m_ReferencedResources );
         }
 
+        // Hands the timer queries this command list sampled over to the caller,
+        // which stamps its submission serial on them.
+        std::vector<RefCountPtr<TimerQuery>> takeSampledTimerQueries()
+        {
+            return std::move( m_SampledTimerQueries );
+        }
+
     private:
         void endEncoder();
         id<MTLComputeCommandEncoder> getComputeEncoder();
         id<MTLBlitCommandEncoder> getBlitEncoder();
         id<MTLRenderCommandEncoder> getRenderEncoder(Framebuffer* framebuffer);
         bool reopenRenderEncoder();
+        void sampleTimestamp(TimerQuery* query, bool atPassEnd);
 
         void bindComputeResources(const ComputeState& state);
         void bindGraphicsResources(const GraphicsState& state);
@@ -494,6 +517,15 @@ namespace nvrhi::metal
         // wrappers are what the command list still points at.
         std::vector<RefCountPtr<IResource>> m_ReferencedResources;
 
+        // The timer queries the command buffer sampled, so the submission can stamp
+        // its serial on them.
+        std::vector<RefCountPtr<TimerQuery>> m_SampledTimerQueries;
+
+        // The counter resolves the command buffer defers to its end, one pair of
+        // samples per timer query. This driver generation stops taking samples once
+        // a resolve runs, so every resolve has to come after every sample.
+        std::vector<RefCountPtr<TimerQuery>> m_PendingCounterResolves;
+
         std::vector<uint8_t> m_PushConstants;
 
         bool m_IsOpen = false;
@@ -534,6 +566,15 @@ namespace nvrhi::metal
 
         // A queue wait the GPU performs before the queue's next submission.
         bool commitQueueWaits(CommandQueue executionQueue);
+
+        // The counter sample buffer the timer queries sample into, and the shared
+        // buffer their resolved timestamps land in.
+        id<MTLCounterSampleBuffer> getCounterSampleBuffer() const { return m_CounterSampleBuffer; }
+        id<MTLBuffer> getCounterResolveBuffer() const { return m_CounterResolveBuffer; }
+        // The empty render pass that samples a timestamp needs a colour attachment.
+        id<MTLTexture> getTimerQuerySampleTarget();
+        bool initTimerQueryPool();
+        void releaseTimerQueryIndex(uint32_t poolIndex);
 
         // The pipeline that expands the indirect draw arguments for a counted draw.
         id<MTLComputePipelineState> getIndirectCountPipeline();
@@ -628,6 +669,15 @@ namespace nvrhi::metal
         // The null texture buffers, one per element format.
         std::map<Format, id<MTLTexture>> m_NullTextureBuffers;
         id<MTLSamplerState> m_NullSampler = nil;
+        // The timestamp counter sample buffer and the shared buffer the resolved
+        // timestamps land in, created on the first timer query. The tiny render
+        // target is the attachment of the empty passes the samples go at.
+        id<MTLCounterSampleBuffer> m_CounterSampleBuffer = nil;
+        id<MTLBuffer> m_CounterResolveBuffer = nil;
+        id<MTLTexture> m_TimerQuerySampleTarget = nil;
+        // The free indices of the timer query pool, one pair of samples each.
+        std::vector<int32_t> m_FreeTimerQueryIndices;
+        bool m_TimerQueryPoolInitAttempted = false;
         // The submissions signal this event with their serial, and the queue waits of
         // queueWaitForCommandList wait on it before the next submission of the queue.
         id<MTLSharedEvent> m_SubmissionEvent = nil;
