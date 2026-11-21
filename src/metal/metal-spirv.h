@@ -51,8 +51,14 @@ namespace nvrhi::metal
         // A texture array of texture buffers holds the typed buffer views of NVRHI,
         // so it needs a different null resource than an array of sampled textures.
         bool bufferArray = false;
+        // The texture type an array argument declares, which the null resource of
+        // an unwritten slot has to match.
+        TextureDimension dimension = TextureDimension::Unknown;
         // The format of the texture elements, which is the format of a null texture buffer.
         Format format = Format::UNKNOWN;
+        // The stage the resource belongs to. A graphics pipeline translates its
+        // stages separately, so one binding can take different indices per stage.
+        ShaderType stage = ShaderType::None;
     };
 
     struct TranslatedShader

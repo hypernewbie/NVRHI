@@ -27,19 +27,25 @@
 #include "uaa_runner.h"
 
 #include <nvrhi/metal.h>
+#if UAA_WITH_VALIDATION
+#include <nvrhi/validation.h>
+#endif
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <TargetConditionals.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace nvrhi::uaa
@@ -764,7 +770,135 @@ namespace nvrhi::uaa
         }
     }
 
+    // A dedicated device is released without the fixture's waitForIdle call.
+    static void testMetalDeviceTeardown(TestContext& ctx)
+    {
+        UAA_CHECK(ctx.fixture != nullptr, "Fixture must be initialised");
+        if (ctx.fixture->api() != nvrhi::GraphicsAPI::METAL)
+            UAA_SKIP("SUB.MetalTeardown requires the Metal backend");
+
+        for (uint32_t cycle = 0; cycle < 6; ++cycle)
+        {
+            @autoreleasepool
+            {
+                nvrhi::metal::DeviceDesc desc;
+                desc.errorCB = &ctx.fixture->messages();
+                nvrhi::metal::DeviceHandle raw = nvrhi::metal::createDevice(desc);
+                UAA_CHECK(raw != nullptr, "metal::createDevice returned null");
+                nvrhi::DeviceHandle device = raw;
+#if UAA_WITH_VALIDATION
+                if (ctx.fixture->isValidationActive())
+                    device = nvrhi::validation::createValidationLayer(raw);
+#endif
+                UAA_CHECK(device != nullptr, "failed to create active device");
+                if (cycle == 0)
+                {
+                    device = nullptr;
+                    raw = nullptr;
+                    continue;
+                }
+
+                nvrhi::BufferDesc bufferDesc;
+                bufferDesc.setByteSize(16)
+                    .setInitialState(nvrhi::ResourceStates::CopyDest)
+                    .setKeepInitialState(true)
+                    .setDebugName("teardown_output");
+                nvrhi::BufferHandle buffer = device->createBuffer(bufferDesc);
+                nvrhi::CommandListHandle cmd = device->createCommandList();
+                UAA_CHECK(buffer != nullptr && cmd != nullptr, "failed to create teardown resources");
+                const uint32_t marker = 0xA11CEu + cycle;
+                cmd->open();
+                cmd->writeBuffer(buffer, &marker, sizeof(marker));
+                cmd->close();
+
+                id<MTLCommandBuffer> nativeCommand =
+                    (__bridge id<MTLCommandBuffer>)cmd->getNativeObject(nvrhi::ObjectTypes::Metal_CommandBuffer).pointer;
+                id<MTLDevice> nativeDevice = (__bridge id<MTLDevice>)raw->getNativeDevice().pointer;
+                id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)raw->getNativeCommandQueue().pointer;
+                id<MTLSharedEvent> gate = [nativeDevice newSharedEvent];
+                id<MTLSharedEvent> completed = [nativeDevice newSharedEvent];
+                UAA_CHECK(nativeCommand && queue && gate && completed, "failed to create native teardown objects");
+                [nativeCommand encodeSignalEvent:completed value:1];
+                auto callbackDone = std::make_shared<std::atomic<bool>>(false);
+                [nativeCommand addCompletedHandler:^(id<MTLCommandBuffer>) { callbackDone->store(true); }];
+
+                if (cycle > 1)
+                {
+                    id<MTLCommandBuffer> wait = [queue commandBuffer];
+                    UAA_CHECK(wait != nil, "failed to create the GPU gate command buffer");
+                    [wait encodeWaitForEvent:gate value:1];
+                    [wait commit];
+                }
+
+                // Signal independently of the destructor. The test runner watchdog
+                // bounds the case if destruction or completion fails to return.
+                std::thread signaler([gate] {
+                    @autoreleasepool
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                        gate.signaledValue = 1;
+                    }
+                });
+                const uint64_t serial = device->executeCommandList(cmd);
+                const bool wasPending = cycle == 1 || completed.signaledValue == 0;
+                if (cycle == 1)
+                    device->waitForIdle();
+                cmd = nullptr;
+                buffer = nullptr;
+                device = nullptr;
+                raw = nullptr;
+                signaler.join();
+
+                UAA_CHECK(serial != 0, "executeCommandList returned 0");
+                UAA_CHECK(wasPending, "the submission completed before the GPU gate was released");
+                [nativeCommand waitUntilCompleted];
+                UAA_CHECK(nativeCommand.status == MTLCommandBufferStatusCompleted, "native command buffer failed");
+                UAA_CHECK_EQ(completed.signaledValue, uint64_t(1), "GPU completion marker missing");
+                UAA_CHECK(ctx.fixture->waitWithWatchdog([&] { return callbackDone->load(); }, 3000),
+                    "native completion callback did not run");
+            }
+        }
+    }
+
     UAA_REGISTER_TEST("NAT.Metal", "native,metal", testMetalNative);
+    static void testMetalMissingCommandBuffer(TestContext& ctx)
+    {
+        UAA_CHECK(ctx.fixture != nullptr, "Fixture must be initialised");
+        if (ctx.fixture->api() != nvrhi::GraphicsAPI::METAL)
+            UAA_SKIP("SUB.MetalMissingCommandBuffer requires the Metal backend");
+
+        ExpectErrorsGuard guard(*ctx.fixture);
+        nvrhi::metal::DeviceDesc desc;
+        desc.errorCB = &ctx.fixture->messages();
+        nvrhi::metal::DeviceHandle device = nvrhi::metal::createDevice(desc);
+        UAA_CHECK(device != nullptr, "metal::createDevice returned null");
+        nvrhi::CommandListHandle first = device->createCommandList();
+        nvrhi::CommandListHandle missing = device->createCommandList();
+        nvrhi::CommandListHandle last = device->createCommandList();
+        UAA_CHECK(first && missing && last, "command list creation failed");
+        first->open();
+        first->close();
+        last->open();
+        last->close();
+        id<MTLCommandBuffer> firstNative =
+            (__bridge id<MTLCommandBuffer>)first->getNativeObject(nvrhi::ObjectTypes::Metal_CommandBuffer).pointer;
+        id<MTLCommandBuffer> lastNative =
+            (__bridge id<MTLCommandBuffer>)last->getNativeObject(nvrhi::ObjectTypes::Metal_CommandBuffer).pointer;
+        UAA_CHECK(firstNative && lastNative, "recorded command buffers are missing");
+
+        nvrhi::ICommandList* batch[] = { first, missing, last };
+        const uint64_t serial = device->executeCommandLists(batch, 3);
+        const bool idle = device->waitForIdle();
+        UAA_CHECK_EQ(serial, uint64_t(0), "a batch with a missing command buffer must fail");
+        UAA_CHECK(idle, "the earlier submission did not complete");
+        UAA_CHECK_EQ(firstNative.status, MTLCommandBufferStatusCompleted, "the first command buffer did not complete");
+        UAA_CHECK_EQ(lastNative.status, MTLCommandBufferStatusNotEnqueued, "the batch continued after the missing command buffer");
+        UAA_CHECK_EQ(guard.errorCount(), size_t(1), "the missing command buffer was not reported once");
+        UAA_CHECK(guard.hasMessageContaining("command list has no Metal command buffer"), "the missing buffer diagnostic was not reported");
+    }
+
+    UAA_REGISTER_TEST("SUB.MetalTeardown", "core,metal,isolated", testMetalDeviceTeardown);
+    UAA_REGISTER_TEST("SUB.MetalMissingCommandBuffer", "core,metal", testMetalMissingCommandBuffer);
 } // namespace nvrhi::uaa
 
 #endif // defined(UAA_WITH_METAL) && UAA_WITH_METAL

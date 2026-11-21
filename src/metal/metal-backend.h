@@ -29,9 +29,15 @@
 
 #include "../common/state-tracking.h"
 #include "metal-spirv.h"
+#ifdef NVRHI_METAL_TEST_HOOKS
+#include "metal-test-hooks.h"
+#endif
 
+#include <condition_variable>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -290,27 +296,6 @@ namespace nvrhi::metal
         // direction, sized to the table capacity by the translation.
         std::vector<ResourceBinding> bindlessArrays;
 
-        const Entry* find(ShaderType stage, uint32_t descriptorSet, uint32_t slot) const
-        {
-            for (const auto& entry : entries)
-            {
-                if (entry.stage == stage && entry.descriptorSet == descriptorSet && entry.slot == slot)
-                    return &entry;
-            }
-
-            return nullptr;
-        }
-
-        const ResourceBinding* findBindlessArray(ResourceKind kind, bool writeable) const
-        {
-            for (const auto& array : bindlessArrays)
-            {
-                if (array.kind == kind && array.writeable == writeable)
-                    return &array;
-            }
-
-            return nullptr;
-        }
     };
 
     class ComputePipeline : public RefCounter<IComputePipeline>
@@ -455,7 +440,9 @@ namespace nvrhi::metal
         void bindResource(const BoundResource& bound, const nvrhi::BindingSetItem& item);
         void bindGraphicsResource(const BoundResource& bound, const nvrhi::BindingSetItem& item, bool vertexStage);
         void bindDescriptorTable(DescriptorTable* table, const PipelineBindingPlan& plan);
-        void bindNullResource(ResourceKind kind, uint32_t index, bool bufferArray, Format format);
+        void bindTableArray(const std::vector<nvrhi::BindingSetItem>& slots, const ResourceBinding& array);
+        void bindNullResource(ResourceKind kind, uint32_t index, bool bufferArray, Format format, TextureDimension dimension,
+            ShaderType stage = ShaderType::None);
         void bindPushConstants(uint32_t bufferIndex, uint32_t size, ShaderType stage);
         id<MTLBuffer> expandIndirectDrawArgs(uint32_t paramOffsetBytes, uint32_t countOffsetBytes, uint32_t maxDrawCount);
         void clearTexture(Texture* texture, const TextureSubresourceSet& subresources, const Color& color, uint32_t intValue, bool integer);
@@ -512,6 +499,16 @@ namespace nvrhi::metal
         bool m_IsOpen = false;
     };
 
+    struct SubmissionCompletion
+    {
+        std::mutex mutex;
+        std::condition_variable condition;
+        std::set<uint64_t> finishedOutOfOrder;
+        uint64_t lastCompletedSerial = 0;
+        uint64_t firstFailedSerial = 0;
+        uint32_t pendingCallbacks = 0;
+    };
+
     class Device : public RefCounter<nvrhi::metal::IDevice>
     {
     public:
@@ -521,16 +518,22 @@ namespace nvrhi::metal
         // Internal backend methods
         Context& getContext() { return m_Context; }
         id<MTLCommandQueue> getQueue() const { return m_Context.queue; }
-        uint64_t submitCommandList(ICommandList* commandList);
+        // The caller holds m_Mutex.
+        uint64_t submitCommandListLocked(ICommandList* commandList);
+#ifdef NVRHI_METAL_TEST_HOOKS
+        void setSubmissionHooks(const test::SubmissionHooks& hooks);
+        Object getSubmissionEvent() const { return Object((__bridge void*)m_SubmissionEvent); }
+#endif
 
         // Null resources bound to the unwritten slots of a shader array argument.
         id<MTLBuffer> getNullBuffer();
-        id<MTLTexture> getNullTexture();
+        // Null textures must match the shader's dimension and scalar type.
+        id<MTLTexture> getNullTexture(TextureDimension dimension, Format format);
         id<MTLTexture> getNullTextureBuffer(Format format);
         id<MTLSamplerState> getNullSampler();
 
         // A queue wait the GPU performs before the queue's next submission.
-        void commitQueueWaits(CommandQueue executionQueue);
+        bool commitQueueWaits(CommandQueue executionQueue);
 
         // The pipeline that expands the indirect draw arguments for a counted draw.
         id<MTLComputePipelineState> getIndirectCountPipeline();
@@ -621,7 +624,7 @@ namespace nvrhi::metal
     private:
         Context m_Context;
         id<MTLBuffer> m_NullBuffer = nil;
-        id<MTLTexture> m_NullTexture = nil;
+        std::map<std::pair<TextureDimension, Format>, id<MTLTexture>> m_NullTextures;
         // The null texture buffers, one per element format.
         std::map<Format, id<MTLTexture>> m_NullTextureBuffers;
         id<MTLSamplerState> m_NullSampler = nil;
@@ -633,9 +636,10 @@ namespace nvrhi::metal
         std::mutex m_QueueWaitMutex;
         std::mutex m_Mutex;
         uint64_t m_LastSubmittedSerial = 0;
-        uint64_t m_LastCompletedSerial = 0;
-        std::mutex m_CompletionMutex;
-        std::condition_variable m_CompletionCondition;
+        std::shared_ptr<SubmissionCompletion> m_Completion = std::make_shared<SubmissionCompletion>();
+#ifdef NVRHI_METAL_TEST_HOOKS
+        test::SubmissionHooks m_TestHooks;
+#endif
     };
 
     MTLPixelFormat convertFormat(Format format);

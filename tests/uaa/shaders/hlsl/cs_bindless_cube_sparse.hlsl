@@ -1,0 +1,46 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+
+// A sparsely populated cube array of the bindless set. The filled slots sit
+// around holes, so the null resources of the holes have to match the cube
+// texture type of the shader argument.
+
+[[vk::binding(0, 0)]] TextureCube<float4> CubeTable[] : register(t0, space0);
+
+[[vk::binding(0, 1)]] StructuredBuffer<uint> Indices : register(t0, space2);
+[[vk::binding(1, 1)]] RWStructuredBuffer<uint4> Out : register(u2, space2);
+[[vk::binding(2, 1)]] SamplerState Samp : register(s2, space2);
+[[vk::binding(3, 1)]] cbuffer Params : register(b3, space2)
+{
+    uint count;
+};
+
+[numthreads(64, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= count)
+        return;
+
+    const float4 face = CubeTable[Indices[id.x]].SampleLevel(Samp, float3(0.0f, 0.0f, 1.0f), 0);
+
+    Out[id.x] = uint4(face * 255.0f + 0.5f);
+}

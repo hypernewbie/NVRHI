@@ -136,7 +136,7 @@ namespace nvrhi::uaa
         BindingLayoutHandle makeTexBufBindlessLayout(
             const TestFixture& fix,
             uint32_t maxCapacity,
-            bool updateAfterBind = true)
+            bool updateAfterBind)
         {
             BindlessLayoutDesc desc;
             desc.setVisibility(ShaderType::Compute)
@@ -179,7 +179,7 @@ namespace nvrhi::uaa
             const TestFixture& fix,
             uint32_t maxCapacity,
             uint32_t maxElements,
-            bool updateAfterBind = true)
+            bool updateAfterBind)
         {
             IDevice* dev = fix.device();
             BindlessHarness h;
@@ -222,6 +222,15 @@ namespace nvrhi::uaa
             UAA_CHECK(h.regularSet != nullptr, "createBindingSet(regular) returned null");
 
             return h;
+        }
+
+        BindlessHarness createBindlessHarness(
+            TestContext& ctx,
+            const TestFixture& fix,
+            uint32_t maxCapacity,
+            uint32_t maxElements)
+        {
+            return createBindlessHarness(ctx, fix, maxCapacity, maxElements, fix.api() != GraphicsAPI::METAL);
         }
 
         void runBindlessDispatch(
@@ -660,6 +669,9 @@ namespace nvrhi::uaa
             UAA_CHECK_EQ(out[1], 0x7001u, "Non-UAB buf0 mismatch");
         }
 
+        if (fix.api() == GraphicsAPI::METAL)
+            UAA_SKIP("Metal does not support update-after-bind; the ordinary table case passed");
+
         // updateAfterBind=true path with in-flight unused-slot update behind IGpuGate.
         {
             BindlessHarness hUab = createBindlessHarness(ctx, fix, 16u, 2u, true);
@@ -804,7 +816,7 @@ namespace nvrhi::uaa
 
         {
             ShaderHandle cs = fix.createShader("cs_bindless_tex_buf", ShaderType::Compute, "main");
-            BindingLayoutHandle bindlessLayout = makeTexBufBindlessLayout(fix, 16u, true);
+            BindingLayoutHandle bindlessLayout = makeTexBufBindlessLayout(fix, 16u, fix.api() != GraphicsAPI::METAL);
             BindingLayoutHandle regularLayout = makeTexBufRegularLayout(fix);
             UAA_CHECK(bindlessLayout && regularLayout, "Layouts null");
 
@@ -864,9 +876,12 @@ namespace nvrhi::uaa
             UAA_CHECK(gate->enqueueWait(CommandQueue::Graphics), "IGpuGate::enqueueWait failed");
             dev->executeCommandList(cmd);
 
-            // Update unused slot 4 while the dispatch reading slot 0 is pending behind the gate.
-            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(4, tex4)), "Update unused tex4 failed");
-            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::StructuredBuffer_SRV(4, buf4)), "Update unused buf4 failed");
+            // A pending update requires update-after-bind support.
+            if (fix.api() != GraphicsAPI::METAL)
+            {
+                UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(4, tex4)), "Update unused tex4 failed");
+                UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::StructuredBuffer_SRV(4, buf4)), "Update unused buf4 failed");
+            }
 
             // Drop tracked caller handles (and unused slot 4 handles) before releasing the gate.
             // On Metal, encoded MTLTexture/MTLBuffer objects are retained by the command buffer, so table/slot 0
@@ -939,7 +954,7 @@ namespace nvrhi::uaa
 
             {
                 ExpectErrorsGuard guard(fix);
-                BindingLayoutHandle largeLayout = makeTexBufBindlessLayout(fix, 256u, true);
+                BindingLayoutHandle largeLayout = makeTexBufBindlessLayout(fix, 256u, false);
                 UAA_CHECK(largeLayout != nullptr, "createBindlessLayout(256) returned null");
                 ComputePipelineHandle oversizedPso = dev->createComputePipeline(
                     ComputePipelineDesc()
@@ -996,7 +1011,7 @@ namespace nvrhi::uaa
         requireBindlessSupport(ctx, fix);
         IDevice* dev = fix.device();
 
-        BindingLayoutHandle validBindless = makeTexBufBindlessLayout(fix, 8u, true);
+        BindingLayoutHandle validBindless = makeTexBufBindlessLayout(fix, 8u, fix.api() != GraphicsAPI::METAL);
         BindingLayoutHandle regularLayout = dev->createBindingLayout(
             fix.makeBindingLayoutDesc(ShaderType::Compute)
                 .addItem(BindingLayoutItem::ConstantBuffer(0)));
@@ -1084,13 +1099,539 @@ namespace nvrhi::uaa
         }
     }
 
-    UAA_REGISTER_TEST("TBL.CreateWrite", "core", testBindlessCreateWrite);
-    UAA_REGISTER_TEST("TBL.MixedSpaces", "core", testBindlessMixedSpaces);
-    UAA_REGISTER_TEST("TBL.NonUniform", "core", testBindlessNonUniform);
-    UAA_REGISTER_TEST("TBL.Resize", "core", testBindlessResize);
-    UAA_REGISTER_TEST("TBL.Clear", "core", testBindlessClear);
-    UAA_REGISTER_TEST("TBL.UpdateAfterBind", "core", testBindlessUpdateAfterBind);
-    UAA_REGISTER_TEST("TBL.PendingLifetime", "core", testBindlessPendingLifetime);
-    UAA_REGISTER_TEST("TBL.Limits", "core", testBindlessLimits);
-    UAA_REGISTER_TEST("TBL.Unsupported", "core", testBindlessUnsupported);
-} // namespace nvrhi::uaa
+        // Two read-only texture arrays in the bindless set: a sampled texture array
+        // and a typed buffer array. Both take texture arguments on Metal, so a
+        // backend that picks the array by resource kind alone confuses the two.
+        static void testBindlessTwoTextureKinds(TestContext& ctx)
+        {
+            TestFixture& fix = requireFixture(ctx);
+            requireBindlessSupport(ctx, fix);
+            IDevice* dev = fix.device();
+
+            const bool isMetal = (fix.api() == GraphicsAPI::METAL);
+            const uint32_t capacity = isMetal ? 12u : 16u;
+
+            ShaderHandle cs = fix.createShader("cs_bindless_two_tex_kinds", ShaderType::Compute);
+            UAA_CHECK(cs != nullptr, "shader creation failed");
+
+            BindlessLayoutDesc bindlessDesc;
+            bindlessDesc.setVisibility(ShaderType::Compute)
+                .setLayoutType(BindlessLayoutDesc::LayoutType::Immutable)
+                .setMaxCapacity(capacity)
+                .setUpdateAfterBind(false)
+                .addRegisterSpace(BindingLayoutItem::Texture_SRV(0))
+                .addRegisterSpace(BindingLayoutItem::TypedBuffer_SRV(1));
+            BindingLayoutHandle bindlessLayout = dev->createBindlessLayout(bindlessDesc);
+            UAA_CHECK(bindlessLayout != nullptr, "createBindlessLayout returned null");
+
+            BindingLayoutHandle regularLayout = dev->createBindingLayout(
+                fix.makeBindingLayoutDesc(ShaderType::Compute, regularSpaceForBindless(fix), false)
+                    .addItem(BindingLayoutItem::StructuredBuffer_SRV(0))
+                    .addItem(BindingLayoutItem::StructuredBuffer_SRV(1))
+                    .addItem(BindingLayoutItem::StructuredBuffer_UAV(2))
+                    .addItem(BindingLayoutItem::Sampler(3))
+                    .addItem(BindingLayoutItem::ConstantBuffer(4)));
+            UAA_CHECK(regularLayout != nullptr, "regular layout creation failed");
+
+            DescriptorTableHandle table = dev->createDescriptorTable(bindlessLayout);
+            UAA_CHECK(table != nullptr, "createDescriptorTable returned null");
+
+            ComputePipelineHandle pso = dev->createComputePipeline(
+                ComputePipelineDesc().setComputeShader(cs)
+                    .addBindingLayout(bindlessLayout)
+                    .addBindingLayout(regularLayout));
+            UAA_CHECK(pso != nullptr, "createComputePipeline returned null");
+
+            TextureHandle texRed = createSolidRgba8Texture(fix, 255, 0, 0, 255, "tbl_2k_texRed");
+            TextureHandle texBlue = createSolidRgba8Texture(fix, 0, 0, 255, 255, "tbl_2k_texBlue");
+            UAA_CHECK(texRed && texBlue, "texture creation failed");
+
+            auto makeTyped = [&fix](uint32_t word, const char* name)
+            {
+                BufferDesc desc;
+                desc.setByteSize(64)
+                    .setCanHaveTypedViews(true)
+                    .setFormat(Format::RGBA32_UINT)
+                    .setInitialState(ResourceStates::ShaderResource)
+                    .setKeepInitialState(true)
+                    .setDebugName(name);
+                BufferHandle buf = fix.device()->createBuffer(desc);
+                if (buf)
+                {
+                    const std::array<uint32_t, 4> words = { word, 0u, 0u, 0u };
+                    fix.uploadBuffer(buf, words.data(), sizeof(words));
+                }
+                return buf;
+            };
+            BufferHandle typedA = makeTyped(0x1000u, "tbl_2k_typedA");
+            BufferHandle typedB = makeTyped(0x2000u, "tbl_2k_typedB");
+            UAA_CHECK(typedA && typedB, "typed buffer creation failed");
+
+            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(0, texRed)), "tex slot 0 write failed");
+            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(1, texBlue)), "tex slot 1 write failed");
+            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::TypedBuffer_SRV(0, typedA, Format::RGBA32_UINT)),
+                "typed slot 0 write failed");
+            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::TypedBuffer_SRV(1, typedB, Format::RGBA32_UINT)),
+                "typed slot 1 write failed");
+
+            BufferHandle texIndices = createStructuredBuffer(fix, 16, "tbl_2k_texIdx");
+            BufferHandle typedIndices = createStructuredBuffer(fix, 16, "tbl_2k_typedIdx");
+            BufferDesc outDesc;
+            outDesc.setByteSize(128)
+                .setStructStride(16)
+                .setCanHaveUAVs(true)
+                .setInitialState(ResourceStates::UnorderedAccess)
+                .setKeepInitialState(true)
+                .setDebugName("tbl_2k_out");
+            BufferHandle outBuf = dev->createBuffer(outDesc);
+            UAA_CHECK(outBuf != nullptr, "out buffer creation failed");
+            BufferHandle cbBuf = createConstantBuffer(fix, 256, "tbl_2k_cb");
+            UAA_CHECK(texIndices && typedIndices && outBuf && cbBuf, "harness buffer creation failed");
+
+            SamplerHandle sampler = dev->createSampler(
+                SamplerDesc().setAllFilters(false).setAllAddressModes(SamplerAddressMode::Clamp));
+            UAA_CHECK(sampler != nullptr, "sampler creation failed");
+
+            BindingSetHandle regularSet = dev->createBindingSet(
+                BindingSetDesc()
+                    .addItem(BindingSetItem::StructuredBuffer_SRV(0, texIndices))
+                    .addItem(BindingSetItem::StructuredBuffer_SRV(1, typedIndices))
+                    .addItem(BindingSetItem::StructuredBuffer_UAV(2, outBuf))
+                    .addItem(BindingSetItem::Sampler(3, sampler))
+                    .addItem(BindingSetItem::ConstantBuffer(4, cbBuf)),
+                regularLayout);
+            UAA_CHECK(regularSet != nullptr, "regular binding set creation failed");
+
+            const std::array<uint32_t, 4> texIdx = { 0u, 1u, 0u, 1u };
+            const std::array<uint32_t, 4> typedIdx = { 0u, 0u, 1u, 1u };
+            fix.uploadBuffer(texIndices, texIdx.data(), sizeof(texIdx));
+            fix.uploadBuffer(typedIndices, typedIdx.data(), sizeof(typedIdx));
+            const std::array<uint32_t, 4> params = { 4u, 0u, 0u, 0u };
+            fix.uploadBuffer(cbBuf, params.data(), sizeof(params));
+
+            CommandListHandle cmd = dev->createCommandList();
+            UAA_CHECK(cmd != nullptr, "createCommandList returned null");
+            cmd->open();
+            cmd->setComputeState(ComputeState().setPipeline(pso).addBindingSet(table).addBindingSet(regularSet));
+            cmd->dispatch(1, 1, 1);
+            cmd->close();
+            fix.submitAndWait(cmd);
+
+            std::array<uint32_t, 16> out = {};
+            fix.readbackBuffer(outBuf, out.data(), sizeof(out));
+
+            // The shader writes one uint4 per element: the sampled colour plus the
+            // typed words, so both arrays contribute to the result.
+            const uint32_t expected[4][4] = {
+                { 255u + 0x1000u, 0u, 0u, 255u },
+                { 0u + 0x1000u, 0u, 255u, 255u },
+                { 255u + 0x2000u, 0u, 0u, 255u },
+                { 0u + 0x2000u, 0u, 255u, 255u }
+            };
+            for (uint32_t e = 0; e < 4u; ++e)
+            {
+                for (uint32_t w = 0; w < 4u; ++w)
+                {
+                    UAA_CHECK_EQ(out[e * 4u + w], expected[e][w],
+                        "combined texture+typed mismatch at element " + std::to_string(e) + " word " + std::to_string(w));
+                }
+            }
+        }
+
+        // A cube array of the bindless set with holes between the written slots. The
+        // null resources of the holes must match the cube texture type of the shader.
+        static void testBindlessCubeSparse(TestContext& ctx)
+        {
+            TestFixture& fix = requireFixture(ctx);
+            requireBindlessSupport(ctx, fix);
+            IDevice* dev = fix.device();
+
+            const uint32_t capacity = 8u;
+            const uint32_t slotA = 0u;
+            const uint32_t slotB = 2u;
+            const uint32_t slotC = 5u;
+
+            ShaderHandle cs = fix.createShader("cs_bindless_cube_sparse", ShaderType::Compute);
+            UAA_CHECK(cs != nullptr, "shader creation failed");
+
+            BindlessLayoutDesc bindlessDesc;
+            bindlessDesc.setVisibility(ShaderType::Compute)
+                .setLayoutType(BindlessLayoutDesc::LayoutType::Immutable)
+                .setMaxCapacity(capacity)
+                .setUpdateAfterBind(false)
+                .addRegisterSpace(BindingLayoutItem::Texture_SRV(0));
+            BindingLayoutHandle bindlessLayout = dev->createBindlessLayout(bindlessDesc);
+            UAA_CHECK(bindlessLayout != nullptr, "createBindlessLayout returned null");
+
+            BindingLayoutHandle regularLayout = dev->createBindingLayout(
+                fix.makeBindingLayoutDesc(ShaderType::Compute, regularSpaceForBindless(fix), false)
+                    .addItem(BindingLayoutItem::StructuredBuffer_SRV(0))
+                    .addItem(BindingLayoutItem::StructuredBuffer_UAV(1))
+                    .addItem(BindingLayoutItem::Sampler(2))
+                    .addItem(BindingLayoutItem::ConstantBuffer(3)));
+            UAA_CHECK(regularLayout != nullptr, "regular layout creation failed");
+
+            DescriptorTableHandle table = dev->createDescriptorTable(bindlessLayout);
+            UAA_CHECK(table != nullptr, "createDescriptorTable returned null");
+
+            ComputePipelineHandle pso = dev->createComputePipeline(
+                ComputePipelineDesc().setComputeShader(cs)
+                    .addBindingLayout(bindlessLayout)
+                    .addBindingLayout(regularLayout));
+            UAA_CHECK(pso != nullptr, "createComputePipeline returned null");
+
+            auto makeCube = [&fix](uint8_t r, uint8_t g, uint8_t b, const char* name)
+            {
+                TextureDesc desc;
+                desc.setWidth(2)
+                    .setHeight(2)
+                    .setArraySize(6)
+                    .setDimension(TextureDimension::TextureCube)
+                    .setFormat(Format::RGBA8_UNORM)
+                    .setInitialState(ResourceStates::ShaderResource)
+                    .setKeepInitialState(true)
+                    .setDebugName(name);
+                TextureHandle tex = fix.device()->createTexture(desc);
+                if (tex)
+                {
+                    const std::array<uint8_t, 16> pixels = {
+                        r, g, b, 255, r, g, b, 255,
+                        r, g, b, 255, r, g, b, 255
+                    };
+                    for (uint32_t face = 0; face < 6u; ++face)
+                        fix.uploadTexture2D(tex, face, 0, pixels.data(), 8u);
+                }
+                return tex;
+            };
+            TextureHandle cubeA = makeCube(10, 20, 30, "tbl_cube_A");
+            TextureHandle cubeB = makeCube(40, 50, 60, "tbl_cube_B");
+            TextureHandle cubeC = makeCube(70, 80, 90, "tbl_cube_C");
+            UAA_CHECK(cubeA && cubeB && cubeC, "cube texture creation failed");
+
+            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(slotA, cubeA)), "cube slot A write failed");
+            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(slotB, cubeB)), "cube slot B write failed");
+            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(slotC, cubeC)), "cube slot C write failed");
+
+            BufferHandle indices = createStructuredBuffer(fix, 16, "tbl_cube_idx");
+            BufferDesc outDesc;
+            outDesc.setByteSize(64)
+                .setStructStride(16)
+                .setCanHaveUAVs(true)
+                .setInitialState(ResourceStates::UnorderedAccess)
+                .setKeepInitialState(true)
+                .setDebugName("tbl_cube_out");
+            BufferHandle outBuf = dev->createBuffer(outDesc);
+            UAA_CHECK(outBuf != nullptr, "cube out buffer creation failed");
+            BufferHandle cbBuf = createConstantBuffer(fix, 256, "tbl_cube_cb");
+            SamplerHandle sampler = dev->createSampler(
+                SamplerDesc().setAllFilters(false).setAllAddressModes(SamplerAddressMode::Clamp));
+            UAA_CHECK(indices && outBuf && cbBuf && sampler, "harness creation failed");
+
+            BindingSetHandle regularSet = dev->createBindingSet(
+                BindingSetDesc()
+                    .addItem(BindingSetItem::StructuredBuffer_SRV(0, indices))
+                    .addItem(BindingSetItem::StructuredBuffer_UAV(1, outBuf))
+                    .addItem(BindingSetItem::Sampler(2, sampler))
+                    .addItem(BindingSetItem::ConstantBuffer(3, cbBuf)),
+                regularLayout);
+            UAA_CHECK(regularSet != nullptr, "regular binding set creation failed");
+
+            const std::array<uint32_t, 3> idx = { slotA, slotB, slotC };
+            fix.uploadBuffer(indices, idx.data(), sizeof(idx));
+            const std::array<uint32_t, 4> params = { 3u, 0u, 0u, 0u };
+            fix.uploadBuffer(cbBuf, params.data(), sizeof(params));
+
+            CommandListHandle cmd = dev->createCommandList();
+            UAA_CHECK(cmd != nullptr, "createCommandList returned null");
+            cmd->open();
+            cmd->setComputeState(ComputeState().setPipeline(pso).addBindingSet(table).addBindingSet(regularSet));
+            cmd->dispatch(1, 1, 1);
+            cmd->close();
+            fix.submitAndWait(cmd);
+
+            std::array<uint32_t, 12> out = {};
+            fix.readbackBuffer(outBuf, out.data(), sizeof(out));
+            // The shader writes one uint4 per element, so the components of each
+            // element are the sampled colour channels.
+            const uint32_t expected[3][4] = {
+                { 10u, 20u, 30u, 255u },
+                { 40u, 50u, 60u, 255u },
+                { 70u, 80u, 90u, 255u }
+            };
+            for (uint32_t e = 0; e < 3u; ++e)
+            {
+                for (uint32_t c = 0; c < 4u; ++c)
+                {
+                    UAA_CHECK_EQ(out[e * 4u + c], expected[e][c],
+                        "cube slot mismatch at element " + std::to_string(e) + " channel " + std::to_string(c));
+                }
+            }
+        }
+
+        // A graphics pipeline whose vertex and fragment stages each read their own
+        // texture array of the bindless set. The stages translate separately, so the
+        // arrays take different Metal indices and each stage needs its own binding.
+        static void testBindlessGraphicsStages(TestContext& ctx)
+        {
+            TestFixture& fix = requireFixture(ctx);
+            requireBindlessSupport(ctx, fix);
+            IDevice* dev = fix.device();
+
+            const uint32_t capacity = 4u;
+
+            ShaderHandle vs = fix.createShader("vs_bindless_stage", ShaderType::Vertex);
+            ShaderHandle ps = fix.createShader("ps_bindless_stage", ShaderType::Pixel);
+            UAA_CHECK(vs != nullptr && ps != nullptr, "shader creation failed");
+
+            BindlessLayoutDesc bindlessDesc;
+            bindlessDesc.setVisibility(ShaderType::AllGraphics)
+                .setLayoutType(BindlessLayoutDesc::LayoutType::Immutable)
+                .setUpdateAfterBind(false)
+                .setMaxCapacity(capacity)
+                .addRegisterSpace(BindingLayoutItem::Texture_SRV(0))
+                .addRegisterSpace(BindingLayoutItem::Texture_SRV(1));
+            BindingLayoutHandle bindlessLayout = dev->createBindlessLayout(bindlessDesc);
+            UAA_CHECK(bindlessLayout != nullptr, "createBindlessLayout returned null");
+
+            BindingLayoutHandle samplerLayout = dev->createBindingLayout(
+                fix.makeBindingLayoutDesc(ShaderType::AllGraphics, regularSpaceForBindless(fix), false)
+                    .addItem(BindingLayoutItem::Sampler(1)));
+            UAA_CHECK(samplerLayout != nullptr, "sampler layout creation failed");
+
+            DescriptorTableHandle table = dev->createDescriptorTable(bindlessLayout);
+            UAA_CHECK(table != nullptr, "createDescriptorTable returned null");
+
+            TextureDesc rtDesc;
+            rtDesc.setWidth(8)
+                .setHeight(8)
+                .setFormat(Format::RGBA8_UNORM)
+                .setIsRenderTarget(true)
+                .enableAutomaticStateTracking(ResourceStates::RenderTarget)
+                .setDebugName("tbl_stage_rt");
+            TextureHandle rt = dev->createTexture(rtDesc);
+            UAA_CHECK(rt != nullptr, "render target creation failed");
+            FramebufferHandle fb = dev->createFramebuffer(FramebufferDesc().addColorAttachment(rt));
+            UAA_CHECK(fb != nullptr, "framebuffer creation failed");
+
+            GraphicsPipelineDesc psoDesc;
+            psoDesc.setVertexShader(vs)
+                .setPixelShader(ps)
+                .addBindingLayout(bindlessLayout)
+                .addBindingLayout(samplerLayout)
+                .setRenderState(RenderState()
+                    .setRasterState(RasterState().setCullNone())
+                    .setDepthStencilState(DepthStencilState().setDepthTestEnable(false).setDepthWriteEnable(false).setStencilEnable(false)));
+            GraphicsPipelineHandle pso = dev->createGraphicsPipeline(psoDesc, fb->getFramebufferInfo());
+            UAA_CHECK(pso != nullptr, "createGraphicsPipeline returned null");
+
+            TextureHandle vertTex = createSolidRgba8Texture(fix, 128, 128, 128, 255, "tbl_stage_vert");
+            TextureHandle pixTex = createSolidRgba8Texture(fix, 0, 255, 0, 255, "tbl_stage_pix");
+            UAA_CHECK(vertTex && pixTex, "texture creation failed");
+
+            // One write reaches both register spaces of the type, like the Vulkan
+            // backend. The vertex stage reads slot 0 and the fragment stage slot 1,
+            // so each stage picks up its own texture and the other slots stay holes.
+            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(0, vertTex)), "slot 0 write failed");
+            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(1, pixTex)), "slot 1 write failed");
+
+            SamplerHandle sampler = dev->createSampler(
+                SamplerDesc().setAllFilters(false).setAllAddressModes(SamplerAddressMode::Clamp));
+            UAA_CHECK(sampler != nullptr, "sampler creation failed");
+            BindingSetHandle samplerSet = dev->createBindingSet(
+                BindingSetDesc().addItem(BindingSetItem::Sampler(1, sampler)), samplerLayout);
+            UAA_CHECK(samplerSet != nullptr, "sampler binding set creation failed");
+
+            CommandListHandle cmd = dev->createCommandList();
+            UAA_CHECK(cmd != nullptr, "createCommandList returned null");
+            cmd->open();
+            cmd->clearTextureFloat(rt, AllSubresources, Color(0.f, 0.f, 0.f, 1.f));
+            cmd->setGraphicsState(
+                GraphicsState()
+                    .setPipeline(pso)
+                    .setFramebuffer(fb)
+                    .addBindingSet(table)
+                    .addBindingSet(samplerSet)
+                    .setViewport(ViewportState().addViewportAndScissorRect(fb->getFramebufferInfo().getViewport())));
+            cmd->draw(DrawArguments().setVertexCount(3));
+            cmd->close();
+            fix.submitAndWait(cmd);
+
+            std::vector<uint8_t> pixels;
+            fix.readbackTexture2D(rt, 0, 0, pixels);
+            UAA_CHECK_EQ(pixels.size(), size_t(8 * 8 * 4), "render target readback size mismatch");
+            // Vertex colour grey times pixel colour green gives a dark green.
+            for (size_t i = 0; i < pixels.size(); i += 4)
+            {
+                UAA_CHECK_NEAR(pixels[i], 0, 2, "stage table red channel mismatch");
+                UAA_CHECK_NEAR(pixels[i + 1], 128, 3, "stage table green channel mismatch");
+                UAA_CHECK_NEAR(pixels[i + 2], 0, 2, "stage table blue channel mismatch");
+                UAA_CHECK_NEAR(pixels[i + 3], 255, 2, "stage table alpha channel mismatch");
+            }
+        }
+
+        // The Metal translation puts the arrays of every bindless layout into one
+        // descriptor set, so a second bindless layout must fail the pipeline instead
+        // of binding the wrong arrays.
+        static void testBindlessSecondLayoutRejected(TestContext& ctx)
+        {
+            TestFixture& fix = requireFixture(ctx);
+            requireBindlessSupport(ctx, fix);
+            if (fix.api() != GraphicsAPI::METAL)
+            {
+                ctx.skip("The single-bindless-layout limit is a Metal backend contract");
+            }
+
+            IDevice* dev = fix.device();
+            ShaderHandle cs = fix.createShader("cs_bindless_tex_buf", ShaderType::Compute);
+            UAA_CHECK(cs != nullptr, "shader creation failed");
+
+            BindlessLayoutDesc first;
+            first.setVisibility(ShaderType::Compute)
+                .setLayoutType(BindlessLayoutDesc::LayoutType::Immutable)
+                .setUpdateAfterBind(false)
+                .setMaxCapacity(8u)
+                .addRegisterSpace(BindingLayoutItem::Texture_SRV(0))
+                .addRegisterSpace(BindingLayoutItem::StructuredBuffer_SRV(1));
+            BindingLayoutHandle firstLayout = dev->createBindlessLayout(first);
+            UAA_CHECK(firstLayout != nullptr, "first bindless layout returned null");
+
+            BindlessLayoutDesc second;
+            second.setVisibility(ShaderType::Compute)
+                .setLayoutType(BindlessLayoutDesc::LayoutType::Immutable)
+                .setUpdateAfterBind(false)
+                .setMaxCapacity(4u)
+                .addRegisterSpace(BindingLayoutItem::TypedBuffer_SRV(0));
+            BindingLayoutHandle secondLayout = dev->createBindlessLayout(second);
+            UAA_CHECK(secondLayout != nullptr, "second bindless layout returned null");
+
+            ComputePipelineHandle pso = nullptr;
+            {
+                ExpectErrorsGuard guard(fix);
+                pso = dev->createComputePipeline(
+                    ComputePipelineDesc().setComputeShader(cs)
+                        .addBindingLayout(firstLayout)
+                        .addBindingLayout(secondLayout));
+                UAA_CHECK(pso == nullptr, "a pipeline with two bindless layouts must be rejected on Metal");
+                UAA_CHECK(guard.errorCount() > 0u, "the rejection must report an error");
+            }
+
+            // A pipeline with only the first layout still works after the rejection.
+            ComputePipelineHandle good = dev->createComputePipeline(
+                ComputePipelineDesc().setComputeShader(cs).addBindingLayout(firstLayout));
+            UAA_CHECK(good != nullptr, "pipeline creation after the rejection failed");
+        }
+
+        // An update after recording but before submission must reach the dispatch.
+        static void testBindlessPreSubmitUpdate(TestContext& ctx)
+        {
+            TestFixture& fix = requireFixture(ctx);
+            requireBindlessSupport(ctx, fix);
+            if (fix.api() == GraphicsAPI::METAL)
+                UAA_SKIP("Metal does not support update-after-bind");
+            IDevice* dev = fix.device();
+            BindlessHarness h = createBindlessHarness(ctx, fix, 8, 1, true);
+            TextureHandle before = createSolidRgba8Texture(fix, 11, 22, 33, 255, "tbl_late_before");
+            TextureHandle after = createSolidRgba8Texture(fix, 44, 55, 66, 255, "tbl_late_after");
+            BufferHandle beforeBuf = createStructuredWord(fix, 0x1234u, "tbl_late_before_buf");
+            BufferHandle afterBuf = createStructuredWord(fix, 0x5678u, "tbl_late_after_buf");
+            UAA_CHECK(before && after && beforeBuf && afterBuf, "late update resources failed");
+            UAA_CHECK(dev->writeDescriptorTable(h.table, BindingSetItem::Texture_SRV(0, before)), "initial texture write failed");
+            UAA_CHECK(dev->writeDescriptorTable(h.table, BindingSetItem::StructuredBuffer_SRV(0, beforeBuf)), "initial buffer write failed");
+            const std::array<uint32_t, 4> zero = {0, 0, 0, 0};
+            const std::array<uint32_t, 4> params = {1, 0, 0, 0};
+            fix.uploadBuffer(h.texIndices, zero.data(), sizeof(zero));
+            fix.uploadBuffer(h.bufIndices, zero.data(), sizeof(zero));
+            fix.uploadBuffer(h.cbBuf, params.data(), sizeof(params));
+
+            CommandListHandle cmd = dev->createCommandList();
+            UAA_CHECK(cmd != nullptr, "late update command list failed");
+            cmd->open();
+            cmd->setComputeState(ComputeState().setPipeline(h.pso).addBindingSet(h.table).addBindingSet(h.regularSet));
+            cmd->dispatch(1, 1, 1);
+            cmd->close();
+            UAA_CHECK(dev->writeDescriptorTable(h.table, BindingSetItem::Texture_SRV(0, after)), "late texture write failed");
+            UAA_CHECK(dev->writeDescriptorTable(h.table, BindingSetItem::StructuredBuffer_SRV(0, afterBuf)), "late buffer write failed");
+            fix.submitAndWait(cmd);
+            std::array<uint32_t, 2> output = {};
+            fix.readbackBuffer(h.outBuf, output.data(), sizeof(output));
+            UAA_CHECK_EQ(output[0], packRgba8(44, 55, 66, 255), "dispatch did not see the late texture update");
+            UAA_CHECK_EQ(output[1], 0x5678u, "dispatch did not see the late buffer update");
+        }
+
+        static void testBindlessUintSparse(TestContext& ctx)
+        {
+            TestFixture& fix = requireFixture(ctx);
+            requireBindlessSupport(ctx, fix);
+            IDevice* dev = fix.device();
+            ShaderHandle shader = fix.createShader("cs_bindless_uint_sparse", ShaderType::Compute);
+            UAA_CHECK(shader != nullptr, "integer texture shader creation failed");
+            BindingLayoutHandle tableLayout = dev->createBindlessLayout(BindlessLayoutDesc()
+                .setVisibility(ShaderType::Compute).setLayoutType(BindlessLayoutDesc::LayoutType::Immutable)
+                .setUpdateAfterBind(false).setMaxCapacity(4).addRegisterSpace(BindingLayoutItem::Texture_SRV(0)));
+            BindingLayoutHandle outputLayout = dev->createBindingLayout(
+                fix.makeBindingLayoutDesc(ShaderType::Compute, regularSpaceForBindless(fix), false)
+                    .addItem(BindingLayoutItem::StructuredBuffer_UAV(0)));
+            UAA_CHECK(tableLayout && outputLayout, "integer texture layouts failed");
+            DescriptorTableHandle table = dev->createDescriptorTable(tableLayout);
+            ComputePipelineHandle pipeline = dev->createComputePipeline(ComputePipelineDesc().setComputeShader(shader)
+                .addBindingLayout(tableLayout).addBindingLayout(outputLayout));
+            UAA_CHECK(table && pipeline, "integer texture table or pipeline failed");
+
+            std::array<TextureHandle, 2> textures;
+            const std::array<std::array<uint8_t, 4>, 2> values = {{{{7, 13, 29, 255}}, {{41, 67, 101, 255}}}};
+            for (uint32_t i = 0; i < textures.size(); ++i)
+            {
+                textures[i] = dev->createTexture(TextureDesc().setWidth(1).setHeight(1).setFormat(Format::RGBA8_UINT)
+                    .setInitialState(ResourceStates::ShaderResource).setKeepInitialState(true).setDebugName("tbl_uint_sparse"));
+                UAA_CHECK(textures[i] != nullptr, "integer texture creation failed");
+                fix.uploadTexture2D(textures[i], 0, 0, values[i].data(), 4);
+                UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(i * 2 + 1, textures[i])),
+                    "integer texture table write failed");
+            }
+            BufferHandle output = dev->createBuffer(BufferDesc().setByteSize(32).setStructStride(16).setCanHaveUAVs(true)
+                .setInitialState(ResourceStates::UnorderedAccess).setKeepInitialState(true).setDebugName("tbl_uint_output"));
+            UAA_CHECK(output != nullptr, "integer texture output creation failed");
+            BindingSetHandle outputSet = dev->createBindingSet(
+                BindingSetDesc().addItem(BindingSetItem::StructuredBuffer_UAV(0, output)), outputLayout);
+            CommandListHandle cmd = dev->createCommandList();
+            UAA_CHECK(outputSet && cmd, "integer texture binding or command list failed");
+            cmd->open();
+            cmd->setComputeState(ComputeState().setPipeline(pipeline).addBindingSet(table).addBindingSet(outputSet));
+            cmd->dispatch(2, 1, 1);
+            cmd->close();
+            fix.submitAndWait(cmd);
+            std::array<uint32_t, 8> actual = {};
+            fix.readbackBuffer(output, actual.data(), sizeof(actual));
+            for (size_t i = 0; i < textures.size(); ++i)
+                for (size_t channel = 0; channel < 4; ++channel)
+                    UAA_CHECK_EQ(actual[i * 4 + channel], uint32_t(values[i][channel]), "integer texture readback mismatch");
+        }
+
+        static void testMetalUabRejected(TestContext& ctx)
+        {
+            TestFixture& fix = requireFixture(ctx);
+            if (fix.api() != GraphicsAPI::METAL)
+                UAA_SKIP("Metal update-after-bind rejection applies only to Metal");
+            ExpectErrorsGuard guard(fix);
+            BindingLayoutHandle layout = makeTexBufBindlessLayout(fix, 8, true);
+            UAA_CHECK(layout == nullptr, "Metal accepted an update-after-bind layout");
+            UAA_CHECK(guard.errorCount() > 0, "Metal did not report the unsupported layout");
+        }
+
+        UAA_REGISTER_TEST("TBL.CreateWrite", "core", testBindlessCreateWrite);
+        UAA_REGISTER_TEST("TBL.MixedSpaces", "core", testBindlessMixedSpaces);
+        UAA_REGISTER_TEST("TBL.NonUniform", "core", testBindlessNonUniform);
+        UAA_REGISTER_TEST("TBL.Resize", "core", testBindlessResize);
+        UAA_REGISTER_TEST("TBL.Clear", "core", testBindlessClear);
+        UAA_REGISTER_TEST("TBL.UpdateAfterBind", "core", testBindlessUpdateAfterBind);
+        UAA_REGISTER_TEST("TBL.PendingLifetime", "core", testBindlessPendingLifetime);
+        UAA_REGISTER_TEST("TBL.Limits", "core", testBindlessLimits);
+        UAA_REGISTER_TEST("TBL.Unsupported", "core", testBindlessUnsupported);
+        UAA_REGISTER_TEST("TBL.TwoTextureKinds", "core", testBindlessTwoTextureKinds);
+        UAA_REGISTER_TEST("TBL.CubeSparse", "core", testBindlessCubeSparse);
+        UAA_REGISTER_TEST("TBL.UintSparse", "core", testBindlessUintSparse);
+        UAA_REGISTER_TEST("TBL.PreSubmitUpdate", "core", testBindlessPreSubmitUpdate);
+        UAA_REGISTER_TEST("TBL.MetalUabRejected", "core,metal", testMetalUabRejected);
+        UAA_REGISTER_TEST("TBL.GraphicsStages", "core", testBindlessGraphicsStages);
+        UAA_REGISTER_TEST("TBL.SecondLayoutRejected", "core", testBindlessSecondLayoutRejected);
+    } // namespace nvrhi::uaa

@@ -689,6 +689,7 @@ namespace nvrhi::uaa
                 bld.setVisibility(nvrhi::ShaderType::Compute)
                    .setFirstSlot(0)
                    .setMaxCapacity(128)
+                   .setUpdateAfterBind(false)
                    .addRegisterSpace(nvrhi::BindingLayoutItem::Texture_SRV(0));
                 bindlessLayout = dev->createBindlessLayout(bld);
                 UAA_CHECK(bindlessLayout != nullptr, "createBindlessLayout failed in STR.Resize");

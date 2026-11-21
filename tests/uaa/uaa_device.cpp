@@ -334,6 +334,37 @@ namespace nvrhi::uaa
             }
         }
 
+        void testMetalFormatClaims(TestContext& ctx)
+        {
+            if (ctx.fixture->api() != nvrhi::GraphicsAPI::METAL)
+                UAA_SKIP("Metal format claims apply only to the Metal backend");
+
+            nvrhi::IDevice* dev = ctx.fixture->device();
+            using nvrhi::Format;
+            using nvrhi::FormatSupport;
+            const FormatSupport noCompressed = FormatSupport::Buffer | FormatSupport::RenderTarget | FormatSupport::Blendable
+                | FormatSupport::DepthStencil | FormatSupport::ShaderUavLoad | FormatSupport::ShaderUavStore;
+            const FormatSupport bc = dev->queryFormatSupport(Format::BC1_UNORM);
+            UAA_CHECK((bc & noCompressed) == 0u, "BC1 must not advertise buffer, attachment, blend, or UAV support");
+
+            const FormatSupport integer = dev->queryFormatSupport(Format::RGBA8_UINT);
+            UAA_CHECK((integer & FormatSupport::RenderTarget) != 0u, "RGBA8_UINT must support colour attachments");
+            UAA_CHECK((integer & (FormatSupport::Blendable | FormatSupport::ShaderSample)) == 0u,
+                "RGBA8_UINT must not advertise blending or filtered sampling");
+
+            const FormatSupport rgba = dev->queryFormatSupport(Format::RGBA8_UNORM);
+            const FormatSupport rgbaRequired = FormatSupport::Texture | FormatSupport::RenderTarget | FormatSupport::Blendable
+                | FormatSupport::ShaderSample | FormatSupport::ShaderUavStore;
+            UAA_CHECK((rgba & rgbaRequired) == rgbaRequired, "RGBA8_UNORM is missing a required capability");
+
+            const FormatSupport depth = dev->queryFormatSupport(Format::D32);
+            UAA_CHECK((depth & (FormatSupport::Texture | FormatSupport::DepthStencil)) == (FormatSupport::Texture | FormatSupport::DepthStencil),
+                "D32 is missing depth texture support");
+            UAA_CHECK((depth & (FormatSupport::Buffer | FormatSupport::RenderTarget | FormatSupport::Blendable
+                | FormatSupport::ShaderUavLoad | FormatSupport::ShaderUavStore)) == 0u,
+                "D32 must not advertise buffer, colour, blend, or UAV support");
+        }
+
         void testResourceDescriptions(TestContext& ctx)
         {
             nvrhi::IDevice* dev = ctx.fixture->device();
@@ -433,6 +464,7 @@ namespace nvrhi::uaa
                     .setVisibility(nvrhi::ShaderType::Compute)
                     .setFirstSlot(0)
                     .setMaxCapacity(64)
+                    .setUpdateAfterBind(false)
                     .addRegisterSpace(nvrhi::BindingLayoutItem::Texture_SRV(0));
                 nvrhi::BindingLayoutHandle bindless = dev->createBindlessLayout(bindlessDesc);
                 UAA_CHECK(bindless != nullptr, "createBindlessLayout returned null");
@@ -688,6 +720,7 @@ namespace nvrhi::uaa
     UAA_REGISTER_TEST("DEV.CreateDestroy", "core", testCreateDestroy);
     UAA_REGISTER_TEST("DEV.Capabilities", "core", testCapabilities);
     UAA_REGISTER_TEST("DEV.FormatSupport", "core", testFormatSupport);
+    UAA_REGISTER_TEST("DEV.MetalFormatClaims", "core,metal", testMetalFormatClaims);
     UAA_REGISTER_TEST("DEV.ResourceDescriptions", "core", testResourceDescriptions);
     UAA_REGISTER_TEST("DEV.GarbageCollection", "core", testGarbageCollection);
     UAA_REGISTER_TEST("DEV.MultipleDevices", "core", testMultipleDevices);

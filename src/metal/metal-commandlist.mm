@@ -278,15 +278,19 @@ namespace nvrhi::metal
             }
 
             const BindingSet* bindingSet = checked_cast<BindingSet*>(binding);
-            const ShaderType stage = layout->desc.visibility;
+            const ShaderType stageMask = layout->desc.visibility;
 
             for (const auto& item : bindingSet->desc.bindings)
             {
-                const PipelineBindingPlan::Entry* entry = m_CurrentComputePipeline->plan.find(stage, i, item.slot);
-                if (!entry)
-                    continue;
+                for (const auto& entry : m_CurrentComputePipeline->plan.entries)
+                {
+                    if ((entry.stage & stageMask) == ShaderType::None)
+                        continue;
+                    if (entry.descriptorSet != i || entry.slot != item.slot)
+                        continue;
 
-                bindResource(entry->bound, item);
+                    bindResource(entry.bound, item);
+                }
             }
         }
     }
@@ -948,15 +952,21 @@ namespace nvrhi::metal
             }
 
             const BindingSet* bindingSet = checked_cast<BindingSet*>(binding);
-            const ShaderType stage = layout->desc.visibility;
+            const ShaderType stageMask = layout->desc.visibility;
 
             for (const auto& item : bindingSet->desc.bindings)
             {
-                const PipelineBindingPlan::Entry* entry = m_CurrentGraphicsPipeline->plan.find(stage, i, item.slot);
-                if (!entry)
-                    continue;
+                // One item can serve several stages, and each stage has its own
+                // translated index, so every matching entry is bound.
+                for (const auto& entry : m_CurrentGraphicsPipeline->plan.entries)
+                {
+                    if ((entry.stage & stageMask) == ShaderType::None)
+                        continue;
+                    if (entry.descriptorSet != i || entry.slot != item.slot)
+                        continue;
 
-                bindGraphicsResource(entry->bound, item, stage == ShaderType::Vertex);
+                    bindGraphicsResource(entry.bound, item, entry.stage == ShaderType::Vertex);
+                }
             }
         }
     }
@@ -972,51 +982,83 @@ namespace nvrhi::metal
             if (!getBindlessArrayShape(layout->bindlessDesc.registerSpaces[space].type, kind, writeable))
                 continue;
 
-            const ResourceBinding* array = plan.findBindlessArray(kind, writeable);
-            if (!array)
-                continue;
+            // The register spaces of the layout take the bindings of the bindless
+            // set in their order. The same kind and access can appear in several
+            // stages, and each stage has its own translated index.
+            const uint32_t binding = uint32_t(space);
 
-            // A shader array argument must be bound completely, so the unwritten slots
-            // of the array are tracked and filled with null resources afterwards.
-            std::vector<bool> written(array->count, false);
-
-            for (const auto& item : table->slots[space])
+            for (const ResourceBinding& array : plan.bindlessArrays)
             {
-                if (item.type == ResourceType::None || !item.resourceHandle)
+                if (array.kind != kind || array.writeable != writeable || array.binding != binding)
                     continue;
 
-                if (item.slot >= array->count)
-                    continue;
-
-                BoundResource bound;
-                bound.kind = array->kind;
-                bound.index = array->index + item.slot;
-                written[item.slot] = true;
-
-                bindResource(bound, item);
-                bindGraphicsResource(bound, item, true);
-                bindGraphicsResource(bound, item, false);
-            }
-
-            for (uint32_t slot = 0; slot < array->count; ++slot)
-            {
-                if (!written[slot])
-                    bindNullResource(array->kind, array->index + slot, array->bufferArray, array->format);
+                bindTableArray(table->slots[space], array);
             }
         }
     }
 
-    void CommandList::bindNullResource(ResourceKind kind, uint32_t index, bool bufferArray, Format format)
+    void CommandList::bindTableArray(const std::vector<nvrhi::BindingSetItem>& slots, const ResourceBinding& array)
     {
+        // A shader array argument must be bound completely, so the unwritten slots
+        // of the array are tracked and filled with null resources afterwards.
+        std::vector<bool> written(array.count, false);
+
+        for (const auto& item : slots)
+        {
+            if (item.type == ResourceType::None || !item.resourceHandle)
+                continue;
+
+            if (item.slot >= array.count)
+                continue;
+
+            BoundResource bound;
+            bound.kind = array.kind;
+            bound.index = array.index + item.slot;
+            written[item.slot] = true;
+
+            switch (array.stage)
+            {
+            case ShaderType::Compute:
+                bindResource(bound, item);
+                break;
+            case ShaderType::Vertex:
+                bindGraphicsResource(bound, item, true);
+                break;
+            case ShaderType::Pixel:
+                bindGraphicsResource(bound, item, false);
+                break;
+            default:
+                bindResource(bound, item);
+                bindGraphicsResource(bound, item, true);
+                bindGraphicsResource(bound, item, false);
+                break;
+            }
+        }
+
+        for (uint32_t slot = 0; slot < array.count; ++slot)
+        {
+            if (!written[slot])
+                bindNullResource(array.kind, array.index + slot, array.bufferArray, array.format, array.dimension, array.stage);
+        }
+    }
+
+    void CommandList::bindNullResource(ResourceKind kind, uint32_t index, bool bufferArray, Format format, TextureDimension dimension, ShaderType stage)
+    {
+        const bool bindCompute = stage == ShaderType::Compute || stage == ShaderType::None;
+        const bool bindVertex = stage == ShaderType::Vertex || stage == ShaderType::None;
+        const bool bindPixel = stage == ShaderType::Pixel || stage == ShaderType::None;
+
         switch (kind)
         {
         case ResourceKind::Buffer:
-            if (m_ComputeEncoder)
+            if (bindCompute && m_ComputeEncoder)
                 [m_ComputeEncoder setBuffer:m_Device->getNullBuffer() offset:0 atIndex:index];
             if (m_RenderEncoder)
             {
-                [m_RenderEncoder setVertexBuffer:m_Device->getNullBuffer() offset:0 atIndex:index];
-                [m_RenderEncoder setFragmentBuffer:m_Device->getNullBuffer() offset:0 atIndex:index];
+                if (bindVertex)
+                    [m_RenderEncoder setVertexBuffer:m_Device->getNullBuffer() offset:0 atIndex:index];
+                if (bindPixel)
+                    [m_RenderEncoder setFragmentBuffer:m_Device->getNullBuffer() offset:0 atIndex:index];
             }
             break;
         case ResourceKind::Texture:
@@ -1024,26 +1066,30 @@ namespace nvrhi::metal
             // A typed buffer array holds texture buffers, so its null resource is one.
             id<MTLTexture> nullTexture = bufferArray
                 ? m_Device->getNullTextureBuffer(format)
-                : m_Device->getNullTexture();
+                : m_Device->getNullTexture(dimension, format);
             if (!nullTexture)
                 return;
 
-            if (m_ComputeEncoder)
+            if (bindCompute && m_ComputeEncoder)
                 [m_ComputeEncoder setTexture:nullTexture atIndex:index];
             if (m_RenderEncoder)
             {
-                [m_RenderEncoder setVertexTexture:nullTexture atIndex:index];
-                [m_RenderEncoder setFragmentTexture:nullTexture atIndex:index];
+                if (bindVertex)
+                    [m_RenderEncoder setVertexTexture:nullTexture atIndex:index];
+                if (bindPixel)
+                    [m_RenderEncoder setFragmentTexture:nullTexture atIndex:index];
             }
             break;
         }
         case ResourceKind::Sampler:
-            if (m_ComputeEncoder)
+            if (bindCompute && m_ComputeEncoder)
                 [m_ComputeEncoder setSamplerState:m_Device->getNullSampler() atIndex:index];
             if (m_RenderEncoder)
             {
-                [m_RenderEncoder setVertexSamplerState:m_Device->getNullSampler() atIndex:index];
-                [m_RenderEncoder setFragmentSamplerState:m_Device->getNullSampler() atIndex:index];
+                if (bindVertex)
+                    [m_RenderEncoder setVertexSamplerState:m_Device->getNullSampler() atIndex:index];
+                if (bindPixel)
+                    [m_RenderEncoder setFragmentSamplerState:m_Device->getNullSampler() atIndex:index];
             }
             break;
         }

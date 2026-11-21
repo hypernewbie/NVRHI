@@ -20,11 +20,13 @@
 * DEALINGS IN THE SOFTWARE.
 */
 
+#include "uaa_backend.h"
 #include "uaa_fixture.h"
 #include "uaa_runner.h"
 
 #include <nvrhi/utils.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -983,6 +985,225 @@ namespace nvrhi::uaa
             fix.readbackBuffer(outBuf, actual.data(), actual.size() * sizeof(uint32_t));
             verifyCopyAddWords(ctx, actual, inputWords, kAddVal, kXorVal, "SUB.FailureRecovery");
         }
+
+        // Submits pre-recorded lists from two threads at the same time. Every
+        // submission must return a distinct serial, the outputs must stay correct,
+        // and the concurrent submissions must not corrupt the device.
+        static void testSubConcurrentSubmission(TestContext& ctx)
+        {
+            TestFixture& fix = *ctx.fixture;
+            IDevice* dev = fix.device();
+
+            constexpr uint32_t kRounds = 16;
+            constexpr uint32_t kCount = 64;
+            const CopyAddBundle bundle = createCopyAddBundle(ctx, fix);
+
+            BindingLayoutHandle layout = bundle.layout;
+
+            struct RoundList
+            {
+                CommandListHandle cmd;
+                BufferHandle inBuf;
+                BufferHandle outBuf;
+                BufferHandle cb;
+                BindingSetHandle set;
+                std::vector<uint32_t> inputWords;
+                uint32_t addVal = 0;
+                uint32_t xorVal = 0;
+            };
+
+            std::vector<std::array<RoundList, 2>> rounds(kRounds);
+            for (uint32_t r = 0; r < kRounds; ++r)
+            {
+                for (uint32_t t = 0; t < 2; ++t)
+                {
+                    RoundList& entry = rounds[r][t];
+                    entry.inBuf = makeGpuBuffer(ctx, dev, kCount * sizeof(uint32_t), sizeof(uint32_t), false, "sub_conc_in");
+                    entry.outBuf = makeGpuBuffer(ctx, dev, kCount * sizeof(uint32_t), sizeof(uint32_t), true, "sub_conc_out");
+                    entry.cb = makeConstantBuffer(ctx, dev, sizeof(CopyAddParams), "sub_conc_cb");
+                    entry.set = dev->createBindingSet(
+                        BindingSetDesc()
+                            .addItem(BindingSetItem::ConstantBuffer(0, entry.cb))
+                            .addItem(BindingSetItem::StructuredBuffer_SRV(1, entry.inBuf))
+                            .addItem(BindingSetItem::StructuredBuffer_UAV(2, entry.outBuf)),
+                        layout);
+                    UAA_CHECK(entry.set != nullptr, "createBindingSet returned null");
+
+                    entry.inputWords = TestFixture::makeDeterministicWords(kCount, ctx.seed() ^ (0xB00u + r * 16u + t));
+                    entry.addVal = 17u + r * 3u + t;
+                    entry.xorVal = 0x0F0F0F0Fu + r;
+                    const CopyAddParams params{kCount, entry.addVal, entry.xorVal, 0u};
+
+                    entry.cmd = dev->createCommandList();
+                    UAA_CHECK(entry.cmd != nullptr, "createCommandList returned null");
+                    entry.cmd->open();
+                    entry.cmd->writeBuffer(entry.inBuf, entry.inputWords.data(), entry.inputWords.size() * sizeof(uint32_t));
+                    entry.cmd->writeBuffer(entry.cb, &params, sizeof(params));
+                    entry.cmd->setComputeState(ComputeState().setPipeline(bundle.pipeline).addBindingSet(entry.set));
+                    entry.cmd->dispatch(1, 1, 1);
+                    entry.cmd->close();
+                }
+            }
+
+            std::mutex serialMutex;
+            std::vector<uint64_t> serials;
+            serials.reserve(kRounds * 2);
+
+            for (uint32_t r = 0; r < kRounds; ++r)
+            {
+                std::array<std::thread, 2> workers;
+                for (uint32_t t = 0; t < 2; ++t)
+                {
+                    workers[t] = std::thread([&, r, t]()
+                    {
+                        const uint64_t serial = dev->executeCommandList(rounds[r][t].cmd, CommandQueue::Graphics);
+                        std::lock_guard<std::mutex> lock(serialMutex);
+                        serials.push_back(serial);
+                    });
+                }
+                workers[0].join();
+                workers[1].join();
+            }
+
+            UAA_CHECK_EQ(serials.size(), size_t(kRounds * 2), "collected serial count mismatch");
+            std::sort(serials.begin(), serials.end());
+            for (size_t i = 1; i < serials.size(); ++i)
+            {
+                UAA_CHECK(serials[i - 1] != serials[i], "two concurrent submissions returned the same serial");
+            }
+
+            UAA_CHECK(dev->waitForIdle(), "waitForIdle failed after concurrent submissions");
+
+            for (uint32_t r = 0; r < kRounds; ++r)
+            {
+                for (uint32_t t = 0; t < 2; ++t)
+                {
+                    const RoundList& entry = rounds[r][t];
+                    std::vector<uint32_t> actual(kCount, 0u);
+                    fix.readbackBuffer(entry.outBuf, actual.data(), actual.size() * sizeof(uint32_t));
+                    verifyCopyAddWords(ctx, actual, entry.inputWords, entry.addVal, entry.xorVal, "SUB.ConcurrentSubmission");
+                }
+            }
+        }
+
+        // Releases the GPU gate on failure or timeout so fixture cleanup cannot hang.
+        class ScopedGpuGate
+        {
+        public:
+            explicit ScopedGpuGate(IGpuGate& gate) : m_Gate(gate), m_Watchdog([this] {
+                std::unique_lock<std::mutex> lock(m_Mutex);
+                if (!m_Condition.wait_for(lock, std::chrono::seconds(3), [this] { return m_Released; }))
+                {
+                    m_TimedOut = true;
+                    m_Released = true;
+                    m_Gate.signal();
+                }
+            }) { }
+
+            ~ScopedGpuGate()
+            {
+                release();
+                m_Watchdog.join();
+            }
+
+            void release()
+            {
+                std::lock_guard<std::mutex> lock(m_Mutex);
+                if (!m_Released)
+                {
+                    m_Released = true;
+                    m_Gate.signal();
+                    m_Condition.notify_all();
+                }
+            }
+
+            bool timedOut()
+            {
+                std::lock_guard<std::mutex> lock(m_Mutex);
+                return m_TimedOut;
+            }
+
+        private:
+            IGpuGate& m_Gate;
+            std::mutex m_Mutex;
+            std::condition_variable m_Condition;
+            bool m_Released = false;
+            bool m_TimedOut = false;
+            std::thread m_Watchdog;
+        };
+
+        // The last serial must select the last GPU-written marker, regardless of
+        // which CPU thread submitted first. A gate keeps both submissions pending.
+        static void testSubCompletionOrder(TestContext& ctx)
+        {
+            TestFixture& fix = *ctx.fixture;
+            IDevice* dev = fix.device();
+            std::unique_ptr<IGpuGate> gate = fix.backend()->createGpuGate();
+            if (!gate)
+                UAA_SKIP("A native GPU gate is not available on this backend");
+
+            constexpr uint32_t markers[2] = { 0xA11CEu, 0xB0Bu };
+            BufferHandle output = makeGpuBuffer(ctx, dev, 16, 4, false, "sub_order_output");
+            std::array<CommandListHandle, 2> commands;
+            for (size_t i = 0; i < commands.size(); ++i)
+            {
+                commands[i] = dev->createCommandList();
+                UAA_CHECK(commands[i] != nullptr, "createCommandList returned null");
+                commands[i]->open();
+                commands[i]->writeBuffer(output, &markers[i], sizeof(markers[i]));
+                commands[i]->close();
+            }
+
+            BufferHandle batchOutput = makeGpuBuffer(ctx, dev, 16, 4, false, "sub_order_batch");
+            std::array<CommandListHandle, 2> batch;
+            for (size_t i = 0; i < batch.size(); ++i)
+            {
+                batch[i] = dev->createCommandList();
+                UAA_CHECK(batch[i] != nullptr, "batch command list creation failed");
+                batch[i]->open();
+                batch[i]->writeBuffer(batchOutput, &markers[i], sizeof(markers[i]), i * sizeof(markers[i]));
+                batch[i]->close();
+            }
+
+            EventQueryHandle query = dev->createEventQuery();
+            EventQueryHandle batchQuery = dev->createEventQuery();
+            UAA_CHECK(query && batchQuery, "createEventQuery returned null");
+            UAA_CHECK(gate->enqueueWait(CommandQueue::Graphics), "enqueueWait failed");
+            ScopedGpuGate guard(*gate);
+
+            std::array<uint64_t, 2> serials = {};
+            std::array<std::thread, 2> workers;
+            for (size_t i = 0; i < workers.size(); ++i)
+                workers[i] = std::thread([&, i] { serials[i] = dev->executeCommandList(commands[i]); });
+            for (auto& worker : workers)
+                worker.join();
+
+            UAA_CHECK(serials[0] != 0 && serials[1] != 0, "a submission returned serial 0");
+            UAA_CHECK(serials[0] != serials[1], "the submissions returned the same serial");
+            dev->setEventQuery(query, CommandQueue::Graphics);
+            UAA_CHECK(!dev->pollEventQuery(query), "the event completed while the GPU gate was closed");
+
+            // The queue wait must return without releasing the GPU dependency.
+            dev->queueWaitForCommandList(CommandQueue::Graphics, CommandQueue::Graphics, std::max(serials[0], serials[1]));
+            UAA_CHECK(!guard.timedOut(), "queueWaitForCommandList blocked on the host");
+            ICommandList* batchLists[] = { batch[0], batch[1] };
+            const uint64_t batchSerial = dev->executeCommandLists(batchLists, 2, CommandQueue::Graphics);
+            UAA_CHECK(batchSerial > std::max(serials[0], serials[1]), "batch serial did not follow its dependency");
+            dev->setEventQuery(batchQuery, CommandQueue::Graphics);
+            UAA_CHECK(!dev->pollEventQuery(batchQuery), "the batch completed before the gate was released");
+            guard.release();
+            dev->waitEventQuery(batchQuery);
+            UAA_CHECK(dev->waitForIdle(), "waitForIdle failed");
+
+            uint32_t actual = 0;
+            fix.readbackBuffer(output, &actual, sizeof(actual));
+            const uint32_t expected = markers[serials[0] > serials[1] ? 0 : 1];
+            UAA_CHECK_EQ(actual, expected, "GPU marker order did not match submission serials");
+            std::array<uint32_t, 2> batchActual = {};
+            fix.readbackBuffer(batchOutput, batchActual.data(), sizeof(batchActual));
+            UAA_CHECK_EQ(batchActual[0], markers[0], "first batch marker mismatch");
+            UAA_CHECK_EQ(batchActual[1], markers[1], "second batch marker mismatch");
+        }
     } // namespace
 
     UAA_REGISTER_TEST("SUB.ListLifecycle", "core", testSubListLifecycle);
@@ -994,5 +1215,7 @@ namespace nvrhi::uaa
     UAA_REGISTER_TEST("SUB.LifetimeTracker", "core", testSubLifetimeTracker);
     UAA_REGISTER_TEST("SUB.ResourceRetention", "core", testSubResourceRetention);
     UAA_REGISTER_TEST("SUB.Threading", "core", testSubThreading);
+    UAA_REGISTER_TEST("SUB.ConcurrentSubmission", "core", testSubConcurrentSubmission);
+    UAA_REGISTER_TEST("SUB.CompletionOrder", "core", testSubCompletionOrder);
     UAA_REGISTER_TEST("SUB.FailureRecovery", "core", testSubFailureRecovery);
 } // namespace nvrhi::uaa

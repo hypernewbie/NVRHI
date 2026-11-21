@@ -498,6 +498,14 @@ if (NVRHI_WITH_METAL)
     target_link_libraries(${nvrhi_metal_target} PRIVATE spirv-cross-msl)
     target_link_libraries(${nvrhi_metal_target} PUBLIC "-framework Metal" "-framework Foundation")
 
+    option(NVRHI_METAL_TEST_HOOKS "Enable Metal submission test hooks" OFF)
+    if (NVRHI_METAL_TEST_HOOKS)
+        if (NOT NVRHI_BUILD_TESTS)
+            message(FATAL_ERROR "NVRHI_METAL_TEST_HOOKS requires NVRHI_BUILD_TESTS")
+        endif()
+        target_compile_definitions(${nvrhi_metal_target} PRIVATE NVRHI_METAL_TEST_HOOKS=1)
+    endif()
+
     # The Metal backend is written in Objective-C++ with ARC.
     set_source_files_properties(
         src/metal/metal-commandlist.mm

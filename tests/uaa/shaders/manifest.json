@@ -343,6 +343,136 @@
       "sha256": "5833bc6e20e87072a8e8a334807b8f5989e86718ca5ebe03da1362e955d5162f"
     },
     {
+      "name": "cs_bindless_two_tex_kinds",
+      "kind": "spirv",
+      "source": "hlsl/cs_bindless_two_tex_kinds.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2"
+      ],
+      "output": "bin/spirv/cs_bindless_two_tex_kinds.spv",
+      "bytes": 2280,
+      "sha256": "02679ed68510e711219cb6fc04eeecf2337a20f975cea67ad850014ba350a1be"
+    },
+    {
+      "name": "cs_bindless_two_tex_kinds",
+      "kind": "dxil",
+      "source": "hlsl/cs_bindless_two_tex_kinds.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_bindless_two_tex_kinds.dxil",
+      "bytes": 4876,
+      "sha256": "7b20683d2d11f9ddb8520240dbd23f51290bae0d38dd70f1bf0cc01b8030f6a9"
+    },
+    {
+      "name": "cs_bindless_cube_sparse",
+      "kind": "spirv",
+      "source": "hlsl/cs_bindless_cube_sparse.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2"
+      ],
+      "output": "bin/spirv/cs_bindless_cube_sparse.spv",
+      "bytes": 1896,
+      "sha256": "30d369641a5ced52dac336f29272f272404cf6eef5da4ea26933b7863da54487"
+    },
+    {
+      "name": "cs_bindless_cube_sparse",
+      "kind": "dxil",
+      "source": "hlsl/cs_bindless_cube_sparse.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_bindless_cube_sparse.dxil",
+      "bytes": 4360,
+      "sha256": "280e7454c527fee99bb19075129a06ee6dabfb4555d7b8edc4e7fb7f8abac9a2"
+    },
+    {
+      "name": "cs_bindless_uint_sparse",
+      "kind": "spirv",
+      "source": "hlsl/cs_bindless_uint_sparse.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2"
+      ],
+      "output": "bin/spirv/cs_bindless_uint_sparse.spv",
+      "bytes": 972,
+      "sha256": "362554bb80dabfc44416eaf0f609f79583b08ef6f989a863d8c48b0d9bcb46f6"
+    },
+    {
+      "name": "cs_bindless_uint_sparse",
+      "kind": "dxil",
+      "source": "hlsl/cs_bindless_uint_sparse.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_bindless_uint_sparse.dxil",
+      "bytes": 3548,
+      "sha256": "f77e0cd0f56565c2ab5c1cefa5ac5eaebdf81af7f8623c95e185862a5c1911ab"
+    },
+    {
+      "name": "vs_bindless_stage",
+      "kind": "spirv",
+      "source": "hlsl/vs_bindless_stage.hlsl",
+      "entry": "main",
+      "target": "vs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2"
+      ],
+      "output": "bin/spirv/vs_bindless_stage.spv",
+      "bytes": 1312,
+      "sha256": "74aaef2db1f0f4d2f7cf6ee56038b707acf6b1149f8104e83b837e65d2a716d3"
+    },
+    {
+      "name": "vs_bindless_stage",
+      "kind": "dxil",
+      "source": "hlsl/vs_bindless_stage.hlsl",
+      "entry": "main",
+      "target": "vs_6_0",
+      "flags": [],
+      "output": "bin/dxil/vs_bindless_stage.dxil",
+      "bytes": 4168,
+      "sha256": "14c0fe8b3fb57621f50bd247cf3dbfdb003009cc4887d8a4018e931a0a86ee57"
+    },
+    {
+      "name": "ps_bindless_stage",
+      "kind": "spirv",
+      "source": "hlsl/ps_bindless_stage.hlsl",
+      "entry": "main",
+      "target": "ps_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2"
+      ],
+      "output": "bin/spirv/ps_bindless_stage.spv",
+      "bytes": 960,
+      "sha256": "734dfeaf79271325b729f77ab4d5ca84330bc38bd23e6dd8e071ae75ea9fb812"
+    },
+    {
+      "name": "ps_bindless_stage",
+      "kind": "dxil",
+      "source": "hlsl/ps_bindless_stage.hlsl",
+      "entry": "main",
+      "target": "ps_6_0",
+      "flags": [],
+      "output": "bin/dxil/ps_bindless_stage.dxil",
+      "bytes": 3900,
+      "sha256": "9ac0fdd31cd54638ebb7a11e69fda1e465ccef3c42db9ba2d208cea5132f0375"
+    },
+    {
       "name": "cs_wave_lane",
       "kind": "spirv",
       "source": "hlsl/cs_wave_lane.hlsl",
@@ -739,6 +869,17 @@
       "sha256": "7c294c95204d5b752fc636bcf8ae89e9c01c6d71b033ebdf9eb71957ad119597"
     },
     {
+      "name": "cs_bindless_cube_sparse",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_bindless_cube_sparse.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_bindless_cube_sparse.spv",
+      "bytes": 1896,
+      "sha256": "30d369641a5ced52dac336f29272f272404cf6eef5da4ea26933b7863da54487"
+    },
+    {
       "name": "cs_bindless_tex_buf",
       "kind": "frozen_metal",
       "source": "bin/spirv/cs_bindless_tex_buf.spv",
@@ -748,6 +889,28 @@
       "output": "frozen_metal/cs_bindless_tex_buf.spv",
       "bytes": 2996,
       "sha256": "b1027d1230426dd28ad352a4d65c6215d5735a7c06cb98f2680e295b91c6e4ad"
+    },
+    {
+      "name": "cs_bindless_two_tex_kinds",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_bindless_two_tex_kinds.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_bindless_two_tex_kinds.spv",
+      "bytes": 2280,
+      "sha256": "02679ed68510e711219cb6fc04eeecf2337a20f975cea67ad850014ba350a1be"
+    },
+    {
+      "name": "cs_bindless_uint_sparse",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_bindless_uint_sparse.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_bindless_uint_sparse.spv",
+      "bytes": 972,
+      "sha256": "362554bb80dabfc44416eaf0f609f79583b08ef6f989a863d8c48b0d9bcb46f6"
     },
     {
       "name": "cs_metal_custom_entry",
@@ -803,6 +966,28 @@
       "output": "frozen_metal/cs_sampler_test.spv",
       "bytes": 2472,
       "sha256": "7a683ca8e42a732266774258dfff18dee85608b1b084e25603acc34ba3b3a2b9"
+    },
+    {
+      "name": "ps_bindless_stage",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/ps_bindless_stage.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/ps_bindless_stage.spv",
+      "bytes": 960,
+      "sha256": "734dfeaf79271325b729f77ab4d5ca84330bc38bd23e6dd8e071ae75ea9fb812"
+    },
+    {
+      "name": "vs_bindless_stage",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/vs_bindless_stage.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/vs_bindless_stage.spv",
+      "bytes": 1312,
+      "sha256": "74aaef2db1f0f4d2f7cf6ee56038b707acf6b1149f8104e83b837e65d2a716d3"
     }
   ]
 }

@@ -122,8 +122,18 @@ namespace nvrhi::metal
         m_SubmissionEvent.signaledValue = 0;
     }
 
+    // A callback can release the final device reference while releasing resources.
+    // Its completion state then outlives the device, without waiting on itself.
+    static thread_local SubmissionCompletion* g_ActiveCompletion = nullptr;
+
     Device::~Device()
     {
+        const auto completion = m_Completion;
+        if (g_ActiveCompletion == completion.get())
+            return;
+
+        std::unique_lock< std::mutex > lock(completion->mutex);
+        completion->condition.wait(lock, [&] { return completion->pendingCallbacks == 0; });
     }
 
     Object Device::getNativeObject(ObjectType objectType)
@@ -222,6 +232,9 @@ namespace nvrhi::metal
         MTLHeapDescriptor* descriptor = [[MTLHeapDescriptor alloc] init];
         descriptor.size = d.capacity;
         descriptor.type = MTLHeapTypePlacement;
+        // Heap hazards default to untracked. Track the whole heap so accesses to
+        // overlapping placed resources are ordered across encoders and submissions.
+        descriptor.hazardTrackingMode = MTLHazardTrackingModeTracked;
 
         switch (d.type)
         {
@@ -686,8 +699,8 @@ namespace nvrhi::metal
         if (!eventQuery)
             return true;
 
-        std::lock_guard< std::mutex > lock(m_CompletionMutex);
-        return m_LastCompletedSerial >= eventQuery->serial;
+        std::lock_guard< std::mutex > lock(m_Completion->mutex);
+        return m_Completion->lastCompletedSerial >= eventQuery->serial;
     }
 
     void Device::waitEventQuery(IEventQuery* query)
@@ -696,8 +709,8 @@ namespace nvrhi::metal
         if (!eventQuery)
             return;
 
-        std::unique_lock< std::mutex > lock(m_CompletionMutex);
-        m_CompletionCondition.wait(lock, [this, eventQuery] { return m_LastCompletedSerial >= eventQuery->serial; });
+        std::unique_lock< std::mutex > lock(m_Completion->mutex);
+        m_Completion->condition.wait(lock, [this, eventQuery] { return m_Completion->lastCompletedSerial >= eventQuery->serial; });
     }
 
     void Device::resetEventQuery(IEventQuery* query)
@@ -758,6 +771,11 @@ namespace nvrhi::metal
 
     BindingLayoutHandle Device::createBindlessLayout(const BindlessLayoutDesc& desc)
     {
+        if (desc.updateAfterBind)
+        {
+            m_Context.error("createBindlessLayout: update-after-bind is not supported by the Metal backend");
+            return nullptr;
+        }
         BindingLayout* result = new BindingLayout();
         result->bindlessDesc = desc;
         result->isBindless = true;
@@ -876,8 +894,11 @@ namespace nvrhi::metal
         if (item.type == ResourceType::None)
             return true;
 
-        // The written type picks its register space; a table declares one array per space.
+        // The written type picks its register spaces; a table declares one array per
+        // space. Every space of the type is written, like the Vulkan backend does,
+        // because two spaces of the shader can share one table.
         const BindingLayout* layout = checked_cast<BindingLayout*>(descriptorTable->layout.Get());
+        bool matched = false;
         for (size_t space = 0; space < layout->bindlessDesc.registerSpaces.size(); ++space)
         {
             if (layout->bindlessDesc.registerSpaces[space].type != item.type)
@@ -889,10 +910,10 @@ namespace nvrhi::metal
             if (item.resourceHandle)
                 verifyPermanentBindingState(item, getContext());
 
-            return true;
+            matched = true;
         }
 
-        return false;
+        return matched;
     }
 
     // ------------------------------------------------------------------ Submission
@@ -909,20 +930,67 @@ namespace nvrhi::metal
         return m_NullBuffer;
     }
 
-    id<MTLTexture> Device::getNullTexture()
+    id<MTLTexture> Device::getNullTexture(TextureDimension dimension, Format format)
     {
-        if (!m_NullTexture)
+        const Format viewFormat = format == Format::UNKNOWN ? Format::RGBA8_UNORM : format;
+        const auto key = std::make_pair(dimension, viewFormat);
+        const auto cached = m_NullTextures.find(key);
+        if (cached != m_NullTextures.end())
+            return cached->second;
+
+        // The null texture has to match the texture type the shader declares, so
+        // one null texture exists per dimension an array argument can take.
+        MTLTextureDescriptor* descriptor = [[MTLTextureDescriptor alloc] init];
+        switch (dimension)
         {
-            MTLTextureDescriptor* descriptor = [[MTLTextureDescriptor alloc] init];
-            descriptor.textureType = MTLTextureType2D;
-            descriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
+        case TextureDimension::Texture1D:
+            descriptor.textureType = MTLTextureType1D;
+            descriptor.width = 1;
+            break;
+        case TextureDimension::Texture1DArray:
+            descriptor.textureType = MTLTextureType1DArray;
+            descriptor.width = 1;
+            descriptor.arrayLength = 1;
+            break;
+        case TextureDimension::Texture3D:
+            descriptor.textureType = MTLTextureType3D;
             descriptor.width = 1;
             descriptor.height = 1;
-            descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-            descriptor.storageMode = MTLStorageModeShared;
-            m_NullTexture = [m_Context.device newTextureWithDescriptor:descriptor];
+            descriptor.depth = 1;
+            break;
+        case TextureDimension::TextureCube:
+            descriptor.textureType = MTLTextureTypeCube;
+            descriptor.width = 1;
+            descriptor.height = 1;
+            break;
+        case TextureDimension::TextureCubeArray:
+            descriptor.textureType = MTLTextureTypeCubeArray;
+            descriptor.width = 1;
+            descriptor.height = 1;
+            descriptor.arrayLength = 1;
+            break;
+        case TextureDimension::Texture2DArray:
+            descriptor.textureType = MTLTextureType2DArray;
+            descriptor.width = 1;
+            descriptor.height = 1;
+            descriptor.arrayLength = 1;
+            break;
+        case TextureDimension::Texture2D:
+        case TextureDimension::Unknown:
+        default:
+            descriptor.textureType = MTLTextureType2D;
+            descriptor.width = 1;
+            descriptor.height = 1;
+            break;
         }
-        return m_NullTexture;
+
+        descriptor.pixelFormat = convertFormat(viewFormat);
+        descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+        descriptor.storageMode = MTLStorageModeShared;
+        id<MTLTexture> texture = [m_Context.device newTextureWithDescriptor:descriptor];
+
+        m_NullTextures.emplace(key, texture);
+        return texture;
     }
 
     id<MTLTexture> Device::getNullTextureBuffer(Format format)
@@ -1013,44 +1081,114 @@ namespace nvrhi::metal
         return m_IndirectCountPipeline;
     }
 
-    uint64_t Device::submitCommandList(ICommandList* commandList)
+#ifdef NVRHI_METAL_TEST_HOOKS
+    void Device::setSubmissionHooks(const test::SubmissionHooks& hooks)
+    {
+        std::lock_guard< std::mutex > lock(m_Mutex);
+        m_TestHooks = hooks;
+    }
+
+    void test::setSubmissionHooks(IDevice* device, const SubmissionHooks& hooks)
+    {
+        static_cast<Device*>(device)->setSubmissionHooks(hooks);
+    }
+
+    Object test::getSubmissionEvent(IDevice* device)
+    {
+        return static_cast<Device*>(device)->getSubmissionEvent();
+    }
+#endif
+
+    uint64_t Device::submitCommandListLocked(ICommandList* commandList)
     {
         CommandList* list = checked_cast<CommandList*>(commandList);
         if (!list)
+        {
+            m_Context.error("submitCommandList: the command list is null");
             return 0;
+        }
 
         id<MTLCommandBuffer> commandBuffer = list->getCommandBuffer();
         if (!commandBuffer)
+        {
+            m_Context.error("submitCommandList: the command list has no Metal command buffer");
             return 0;
+        }
+        if (!m_SubmissionEvent)
+        {
+            m_Context.error("submitCommandList: no Metal submission event is available");
+            return 0;
+        }
 
         // Permanent states pinned by descriptor table writes apply at submission.
         list->applyPermanentStates();
 
-        uint64_t serial = 0;
+        const uint64_t serial = ++m_LastSubmittedSerial;
+        const auto completion = m_Completion;
+        id<MTLSharedEvent> submissionEvent = m_SubmissionEvent;
+        IMessageCallback* callback = m_Context.messageCallback;
+#ifdef NVRHI_METAL_TEST_HOOKS
+        const bool injectedFailure = m_TestHooks.failNextCompletion;
+        m_TestHooks.failNextCompletion = false;
+#else
+        const bool injectedFailure = false;
+#endif
+
+        // The block owns the resources and completion state independently of Device.
+        __block std::vector<RefCountPtr<IResource>> referencedResources = list->takeReferencedResources();
         {
-            std::lock_guard< std::mutex > lock(m_Mutex);
-            serial = ++m_LastSubmittedSerial;
+            std::lock_guard< std::mutex > lock(completion->mutex);
+            ++completion->pendingCallbacks;
         }
 
-        __block uint64_t completedSerial = serial;
-
-        // The resources the command buffer uses stay alive until the GPU is done with
-        // it. The handler block holds them and releases them when the command buffer
-        // completes.
-        __block std::vector<RefCountPtr<IResource>> referencedResources = list->takeReferencedResources();
-
         [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
-            std::lock_guard< std::mutex > lock(m_CompletionMutex);
-            if (completedSerial > m_LastCompletedSerial)
-                m_LastCompletedSerial = completedSerial;
-            m_CompletionCondition.notify_all();
+            SubmissionCompletion* previous = g_ActiveCompletion;
+            g_ActiveCompletion = completion.get();
+            const bool failed = injectedFailure || buffer.status != MTLCommandBufferStatusCompleted;
+            NSString* text = injectedFailure ? @"injected completion failure" : (failed ? buffer.error.localizedDescription : nil);
+            std::string error = failed ? std::string(text ? text.UTF8String : "unknown error") : std::string();
+
+            // A failed command buffer may not reach its encoded event signal.
+            // Release dependent GPU waits and report the failure to host callers.
+            if (failed && submissionEvent.signaledValue < serial)
+                submissionEvent.signaledValue = serial;
+            {
+                std::lock_guard< std::mutex > lock(completion->mutex);
+                if (failed && (completion->firstFailedSerial == 0 || serial < completion->firstFailedSerial))
+                    completion->firstFailedSerial = serial;
+                completion->finishedOutOfOrder.insert(serial);
+                while (completion->finishedOutOfOrder.erase(completion->lastCompletedSerial + 1))
+                    ++completion->lastCompletedSerial;
+                completion->condition.notify_all();
+            }
+
+            if (failed && callback)
+            {
+                const std::string message = "the command buffer completed with an error: " + error;
+                callback->message(MessageSeverity::Error, message.c_str());
+            }
             referencedResources.clear();
+            {
+                std::lock_guard< std::mutex > lock(completion->mutex);
+                --completion->pendingCallbacks;
+                completion->condition.notify_all();
+            }
+            g_ActiveCompletion = previous;
         }];
 
         // The submission signals the event when its work is done, which is what
         // the queue waits of queueWaitForCommandList wait for.
-        [commandBuffer encodeSignalEvent:m_SubmissionEvent value:serial];
+        if (!injectedFailure)
+            [commandBuffer encodeSignalEvent:m_SubmissionEvent value:serial];
 
+#ifdef NVRHI_METAL_TEST_HOOKS
+        if (m_TestHooks.beforeCommit)
+        {
+            auto hook = m_TestHooks.beforeCommit;
+            m_TestHooks.beforeCommit = nullptr;
+            hook(m_TestHooks.context, serial);
+        }
+#endif
         [commandBuffer commit];
         list->releaseCommandBuffer();
 
@@ -1059,17 +1197,26 @@ namespace nvrhi::metal
 
     uint64_t Device::executeCommandLists(ICommandList* const* pCommandLists, size_t numCommandLists, CommandQueue executionQueue)
     {
+        // The lock orders serial assignment, queue waits and command-buffer commits.
+        // The completion callbacks use a separate lock and never acquire this one.
+        std::lock_guard< std::mutex > lock(m_Mutex);
+
         // The queue performs its pending waits on the GPU before this submission.
-        commitQueueWaits(executionQueue);
+        if (!commitQueueWaits(executionQueue))
+            return 0;
 
         uint64_t serial = 0;
         for (size_t i = 0; i < numCommandLists; ++i)
-            serial = submitCommandList(pCommandLists[i]);
+        {
+            serial = submitCommandListLocked(pCommandLists[i]);
+            if (serial == 0)
+                return 0;
+        }
 
         return serial;
     }
 
-    void Device::commitQueueWaits(CommandQueue executionQueue)
+    bool Device::commitQueueWaits(CommandQueue executionQueue)
     {
         uint64_t instance = 0;
         {
@@ -1079,14 +1226,32 @@ namespace nvrhi::metal
         }
 
         if (instance == 0)
-            return;
+            return true;
 
-        id<MTLCommandBuffer> commandBuffer = [m_Context.queue commandBuffer];
+#ifdef NVRHI_METAL_TEST_HOOKS
+        const bool injectedFailure = m_TestHooks.failNextQueueWaitAllocation;
+        m_TestHooks.failNextQueueWaitAllocation = false;
+#else
+        const bool injectedFailure = false;
+#endif
+        id<MTLCommandBuffer> commandBuffer = m_SubmissionEvent && !injectedFailure ? [m_Context.queue commandBuffer] : nil;
         if (!commandBuffer)
-            return;
+        {
+            // The consumer would run without its dependency, so the wait stays
+            // pending and the caller hears about the failure.
+            m_Context.error("commitQueueWaits: no command buffer is available for the pending queue wait");
+            std::lock_guard< std::mutex > lock(m_QueueWaitMutex);
+            m_PendingQueueWaits[uint32_t(executionQueue)] = std::max(m_PendingQueueWaits[uint32_t(executionQueue)], instance);
+            return false;
+        }
 
         [commandBuffer encodeWaitForEvent:m_SubmissionEvent value:instance];
+#ifdef NVRHI_METAL_TEST_HOOKS
+        if (m_TestHooks.queueWaitCommitted)
+            m_TestHooks.queueWaitCommitted(m_TestHooks.context, instance);
+#endif
         [commandBuffer commit];
+        return true;
     }
 
     void Device::queueWaitForCommandList(CommandQueue waitQueue, CommandQueue executionQueue, uint64_t instance)
@@ -1104,12 +1269,19 @@ namespace nvrhi::metal
 
     bool Device::waitForIdle()
     {
-        std::unique_lock< std::mutex > lock(m_CompletionMutex);
-        m_CompletionCondition.wait(lock, [this] {
-            std::lock_guard< std::mutex > submitLock(m_Mutex);
-            return m_LastCompletedSerial >= m_LastSubmittedSerial;
+        // The target is taken under the submission lock alone, because the completion
+        // handler needs the completion lock and must not wait for a submitter.
+        uint64_t target = 0;
+        {
+            std::lock_guard< std::mutex > lock(m_Mutex);
+            target = m_LastSubmittedSerial;
+        }
+
+        std::unique_lock< std::mutex > lock(m_Completion->mutex);
+        m_Completion->condition.wait(lock, [this, target] {
+            return m_Completion->lastCompletedSerial >= target;
         });
-        return true;
+        return m_Completion->firstFailedSerial == 0 || m_Completion->firstFailedSerial > target;
     }
 
     CommandListLifetimeTrackerHandle Device::createCommandListLifetimeTracker(CommandQueue executionQueue)
@@ -1154,17 +1326,37 @@ namespace nvrhi::metal
             return FormatSupport::None;
 
         const FormatInfo& info = getFormatInfo(format);
+        if (info.blockSize > 1)
+        {
+            // BC textures are sampled, but Metal does not allow them as render
+            // targets, shader-write textures, or texture buffers.
+            if (@available(macOS 11.0, *))
+            {
+                if (!m_Context.device.supportsBCTextureCompression)
+                    return FormatSupport::None;
+            }
+            return FormatSupport::Texture | FormatSupport::ShaderLoad | FormatSupport::ShaderSample;
+        }
+
         if (info.kind == FormatKind::DepthStencil)
-            return FormatSupport::Texture | FormatSupport::DepthStencil | FormatSupport::ShaderLoad | FormatSupport::Buffer;
+            return FormatSupport::Texture | FormatSupport::DepthStencil | FormatSupport::ShaderLoad;
 
-        FormatSupport support = FormatSupport::Texture | FormatSupport::ShaderLoad | FormatSupport::Buffer;
-        support = support | FormatSupport::ShaderUavLoad | FormatSupport::ShaderUavStore;
+        FormatSupport support = FormatSupport::Texture | FormatSupport::ShaderLoad | FormatSupport::Buffer
+            | FormatSupport::ShaderUavLoad | FormatSupport::ShaderUavStore | FormatSupport::RenderTarget;
 
-        // Integer formats cannot sample through a filtering sampler; the rest can.
+        // Integer attachments support rendering, but not filtering or blending.
         if (info.kind != FormatKind::Integer)
-            support = support | FormatSupport::ShaderSample;
-
-        support = support | FormatSupport::RenderTarget | FormatSupport::Blendable;
+        {
+            support = support | FormatSupport::Blendable;
+            bool filterable = true;
+            if (format == Format::R32_FLOAT || format == Format::RG32_FLOAT || format == Format::RGBA32_FLOAT)
+            {
+                if (@available(macOS 11.0, *))
+                    filterable = m_Context.device.supports32BitFloatFiltering;
+            }
+            if (filterable)
+                support = support | FormatSupport::ShaderSample;
+        }
 
         return support;
     }

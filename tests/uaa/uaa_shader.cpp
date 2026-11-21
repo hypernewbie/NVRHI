@@ -864,6 +864,7 @@ namespace nvrhi::uaa
             BindlessLayoutDesc bindlessDesc;
             bindlessDesc.setVisibility(ShaderType::Compute)
                 .setMaxCapacity(4)
+                .setUpdateAfterBind(false)
                 .addRegisterSpace(BindingLayoutItem::Texture_SRV(0))
                 .addRegisterSpace(BindingLayoutItem::StructuredBuffer_SRV(1));
             BindingLayoutHandle bindlessLayout = dev->createBindlessLayout(bindlessDesc);

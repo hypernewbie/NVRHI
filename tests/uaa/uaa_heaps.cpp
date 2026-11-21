@@ -716,6 +716,138 @@ namespace nvrhi::uaa
             verifySampledFloat4Buffer(ctx, fix, outBuf3, kSize, kSize, 0.10f, 0.80f, 0.40f, 1.00f, "HEAP.AliasHandoff A2");
         }
 
+        // Snapshots each occupant before the next handoff, without a CPU wait.
+        void testHeapDifferentExtentsCommon(TestContext& ctx, bool draw)
+        {
+            TestFixture& fix = *ctx.fixture;
+            if (!fix.features().supports(Feature::VirtualResources))
+                UAA_SKIP("Feature::VirtualResources is not supported by this backend");
+            if (fix.deviceInfo().driverName.find("MoltenVK") != std::string::npos)
+                UAA_SKIP("MoltenVK cannot place these textures at the same offset");
+
+            IDevice* dev = fix.device();
+            TextureDesc smallDesc;
+            smallDesc.setWidth(32).setHeight(32).setMipLevels(2).setFormat(Format::RGBA8_UNORM)
+                .setIsRenderTarget(true).setIsUAV(true).setIsVirtual(true)
+                .setKeepInitialState(false).setDebugName("heap_extent_small");
+            TextureDesc largeDesc = smallDesc;
+            largeDesc.setWidth(128).setHeight(128).setDebugName("heap_extent_large");
+            TextureHandle small = dev->createTexture(smallDesc);
+            TextureHandle large = dev->createTexture(largeDesc);
+            UAA_CHECK(small && large, "virtual texture creation failed");
+            const MemoryRequirements reqA = dev->getTextureMemoryRequirements(small);
+            const MemoryRequirements reqB = dev->getTextureMemoryRequirements(large);
+            UAA_CHECK(reqA.size && reqB.size && reqA.alignment && reqB.alignment, "invalid texture requirements");
+            const uint64_t offset = alignUp(4096, std::max(reqA.alignment, reqB.alignment));
+            HeapHandle heap = dev->createHeap(HeapDesc().setCapacity(offset + std::max(reqA.size, reqB.size))
+                .setType(HeapType::DeviceLocal).setDebugName("heap_extent_heap"));
+            UAA_CHECK(heap != nullptr, "heap creation failed");
+            UAA_CHECK(dev->bindTextureMemory(small, heap, offset), "small texture placement failed");
+            UAA_CHECK(dev->bindTextureMemory(large, heap, offset), "large texture placement failed");
+            ctx.note("heap capacity=" + std::to_string(heap->getDesc().capacity) + " offset=" + std::to_string(offset)
+                + " small=" + std::to_string(reqA.size) + "/" + std::to_string(reqA.alignment)
+                + " large=" + std::to_string(reqB.size) + "/" + std::to_string(reqB.alignment));
+
+            struct SolidConstants
+            {
+                float colour[4];
+                float depth;
+                float scale;
+                float offset[2];
+            };
+            ShaderHandle vs;
+            ShaderHandle ps;
+            BindingLayoutHandle layout;
+            BindingSetHandle bindings;
+            GraphicsPipelineHandle pipeline;
+            std::array<FramebufferHandle, 6> framebuffers;
+            if (draw)
+            {
+                vs = fix.createShader("vs_fullscreen_tri", ShaderType::Vertex);
+                ps = fix.createShader("ps_solid_color", ShaderType::Pixel);
+                layout = dev->createBindingLayout(fix.makeBindingLayoutDesc(ShaderType::AllGraphics)
+                    .addItem(BindingLayoutItem::PushConstants(0, sizeof(SolidConstants))));
+                UAA_CHECK(vs && ps && layout, "failed to create draw shaders or layout");
+                bindings = dev->createBindingSet(BindingSetDesc().addItem(BindingSetItem::PushConstants(0, sizeof(SolidConstants))), layout);
+                UAA_CHECK(bindings != nullptr, "failed to create draw bindings");
+            }
+
+            const std::array<TextureHandle, 3> occupants = { small, large, small };
+            const std::array<std::array<uint8_t, 4>, 6> colours = {{
+                {{255, 0, 0, 255}}, {{0, 255, 0, 255}}, {{0, 0, 255, 255}},
+                {{255, 255, 0, 255}}, {{0, 255, 255, 255}}, {{255, 0, 255, 255}}
+            }};
+            std::array<TextureHandle, 3> snapshots;
+            uint64_t serial = 0;
+            for (size_t phase = 0; phase < occupants.size(); ++phase)
+            {
+                TextureDesc desc = phase == 1 ? largeDesc : smallDesc;
+                desc.setIsVirtual(false).setIsRenderTarget(false).setIsUAV(false)
+                    .setInitialState(ResourceStates::CopyDest).setKeepInitialState(true)
+                    .setDebugName("heap_extent_snapshot");
+                snapshots[phase] = dev->createTexture(desc);
+                UAA_CHECK(snapshots[phase] != nullptr, "snapshot creation failed");
+                CommandListHandle cmd = dev->createCommandList();
+                UAA_CHECK(cmd != nullptr, "command list creation failed");
+                cmd->open();
+                cmd->beginTrackingTextureState(occupants[phase], AllSubresources, ResourceStates::Common);
+                for (uint32_t mip = 0; mip < 2; ++mip)
+                {
+                    const auto& c = colours[phase * 2 + mip];
+                    const Color colour(float(c[0]) / 255.f, float(c[1]) / 255.f, float(c[2]) / 255.f, 1.f);
+                    cmd->clearTextureFloat(occupants[phase], TextureSubresourceSet(mip, 1, 0, 1),
+                        draw ? Color(0.f, 0.f, 0.f, 1.f) : colour);
+                    if (draw)
+                    {
+                        FramebufferHandle& framebuffer = framebuffers[phase * 2 + mip];
+                        framebuffer = dev->createFramebuffer(FramebufferDesc().addColorAttachment(
+                            FramebufferAttachment().setTexture(occupants[phase]).setMipLevel(mip)));
+                        UAA_CHECK(framebuffer != nullptr, "framebuffer creation failed");
+                        if (!pipeline)
+                        {
+                            pipeline = dev->createGraphicsPipeline(GraphicsPipelineDesc()
+                                .setVertexShader(vs).setPixelShader(ps).addBindingLayout(layout)
+                                .setRenderState(RenderState().setRasterState(RasterState().setCullNone())
+                                    .setDepthStencilState(DepthStencilState().setDepthTestEnable(false).setDepthWriteEnable(false))),
+                                framebuffer->getFramebufferInfo());
+                            UAA_CHECK(pipeline != nullptr, "graphics pipeline creation failed");
+                        }
+                        const uint32_t dimension = (phase == 1 ? 128u : 32u) >> mip;
+                        cmd->setGraphicsState(GraphicsState().setPipeline(pipeline).setFramebuffer(framebuffer).addBindingSet(bindings)
+                            .setViewport(ViewportState().addViewportAndScissorRect(Viewport(float(dimension), float(dimension)))));
+                        const SolidConstants constants = {{colour.r, colour.g, colour.b, colour.a}, 0.5f, 1.f, {0.f, 0.f}};
+                        cmd->setPushConstants(&constants, sizeof(constants));
+                        cmd->draw(DrawArguments().setVertexCount(3));
+                    }
+                    const TextureSlice slice = TextureSlice().setMipLevel(mip);
+                    cmd->copyTexture(snapshots[phase], slice, occupants[phase], slice);
+                }
+                cmd->close();
+                if (serial)
+                    dev->queueWaitForCommandList(CommandQueue::Graphics, CommandQueue::Graphics, serial);
+                serial = dev->executeCommandList(cmd);
+                UAA_CHECK(serial != 0, "submission failed");
+            }
+            UAA_CHECK(dev->waitForIdle(), "waitForIdle failed");
+            for (size_t phase = 0; phase < snapshots.size(); ++phase)
+            {
+                for (uint32_t mip = 0; mip < 2; ++mip)
+                {
+                    std::vector<uint8_t> pixels;
+                    fix.readbackTexture2D(snapshots[phase], 0, mip, pixels);
+                    const auto& colour = colours[phase * 2 + mip];
+                    for (size_t i = 0; i < pixels.size(); i += 4)
+                        for (size_t channel = 0; channel < 4; ++channel)
+                            UAA_CHECK_EQ(pixels[i + channel], colour[channel],
+                                "phase " + std::to_string(phase) + " mip " + std::to_string(mip)
+                                + " pixel " + std::to_string(i / 4) + " channel " + std::to_string(channel));
+                }
+            }
+        }
+
+        void testHeapDifferentExtents(TestContext& ctx) { testHeapDifferentExtentsCommon(ctx, false); }
+        void testHeapDifferentExtentDraw(TestContext& ctx) { testHeapDifferentExtentsCommon(ctx, true); }
+
         // Tests alias handoffs across multi-mip, multi-slice virtual 2D array textures.
         void testHeapSubresources(TestContext& ctx)
         {
@@ -1090,6 +1222,8 @@ namespace nvrhi::uaa
     UAA_REGISTER_TEST("HEAP.Placement", "core", testHeapPlacement);
     UAA_REGISTER_TEST("HEAP.Reject", "core", testHeapReject);
     UAA_REGISTER_TEST("HEAP.AliasHandoff", "core", testHeapAliasHandoff);
+    UAA_REGISTER_TEST("HEAP.DifferentExtents", "core", testHeapDifferentExtents);
+    UAA_REGISTER_TEST("HEAP.DifferentExtentDraw", "core", testHeapDifferentExtentDraw);
     UAA_REGISTER_TEST("HEAP.Subresources", "core", testHeapSubresources);
     UAA_REGISTER_TEST("HEAP.PendingLifetime", "core", testHeapPendingLifetime);
     UAA_REGISTER_TEST("HEAP.Native", "core", testHeapNative);

@@ -378,6 +378,28 @@ namespace nvrhi::metal
         return nullptr;
     }
 
+    // The Metal translation places the runtime sized arrays of one bindless layout
+    // into one descriptor set, and the register spaces of a second layout would
+    // take the same bindings. Reject the pipeline instead of binding the wrong array.
+    static bool validateBindlessLayouts(Context& context, const BindingLayoutVector& layouts)
+    {
+        size_t bindlessCount = 0;
+        for (const auto& layoutHandle : layouts)
+        {
+            const BindingLayout* layout = checked_cast<BindingLayout*>(layoutHandle.Get());
+            if (layout && layout->isBindless)
+                ++bindlessCount;
+        }
+
+        if (bindlessCount > 1)
+        {
+            context.error("the Metal backend supports one bindless layout per pipeline, the register spaces of more would collide");
+            return false;
+        }
+
+        return true;
+    }
+
     // Resolves the translation of a shader for the bindless layout of the pipeline, or
     // the eager translation of a shader without runtime sized arrays.
     static const TranslatedShader* resolveTranslation(Context& context, const Shader* shader, const BindingLayoutVector& layouts)
@@ -430,6 +452,9 @@ namespace nvrhi::metal
             return nullptr;
         }
 
+        if (!validateBindlessLayouts(m_Context, desc.bindingLayouts))
+            return nullptr;
+
         const Shader* shader = checked_cast<Shader*>(desc.CS.Get());
         if (!shader)
         {
@@ -472,6 +497,9 @@ namespace nvrhi::metal
             m_Context.error("createGraphicsPipeline: the vertex and pixel shaders are required");
             return nullptr;
         }
+
+        if (!validateBindlessLayouts(m_Context, desc.bindingLayouts))
+            return nullptr;
 
         const TranslatedShader* vertexTranslation = resolveTranslation(m_Context, vertexShader, desc.bindingLayouts);
         const TranslatedShader* pixelTranslation = resolveTranslation(m_Context, pixelShader, desc.bindingLayouts);

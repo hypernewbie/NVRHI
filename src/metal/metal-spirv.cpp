@@ -41,11 +41,30 @@ namespace nvrhi::metal
             uint32_t index = 0;
             uint32_t count = 1;
             bool bufferArray = false;
+            TextureDimension dimension = TextureDimension::Unknown;
             Format format = Format::UNKNOWN;
         };
 
-        // The format of the elements of a texture array, which is the format of the
-        // texture buffer views of a typed buffer array.
+        // The texture type the shader declares for a texture resource, which the
+        // null resource of an unwritten array slot has to match.
+        TextureDimension getTextureDimension(const spirv_cross::SPIRType& elementType)
+        {
+            if (elementType.image.dim == spv::DimBuffer)
+                return TextureDimension::Unknown;
+
+            const bool arrayed = elementType.image.arrayed;
+            switch (elementType.image.dim)
+            {
+            case spv::Dim1D:  return arrayed ? TextureDimension::Texture1DArray : TextureDimension::Texture1D;
+            case spv::Dim2D:  return arrayed ? TextureDimension::Texture2DArray : TextureDimension::Texture2D;
+            case spv::Dim3D:  return TextureDimension::Texture3D;
+            case spv::DimCube: return arrayed ? TextureDimension::TextureCubeArray : TextureDimension::TextureCube;
+            default: return TextureDimension::Unknown;
+            }
+        }
+
+        // Choose a null format with the scalar type and storage format required by
+        // the shader. Sampled images normally omit an explicit SPIR-V image format.
         Format getTextureFormat(spirv_cross::CompilerMSL& compiler, uint32_t id)
         {
             const spirv_cross::SPIRType& variableType = compiler.get_type_from_variable(id);
@@ -62,8 +81,19 @@ namespace nvrhi::metal
             case spv::ImageFormatR32ui:      return Format::R32_UINT;
             case spv::ImageFormatR32i:       return Format::R32_SINT;
             case spv::ImageFormatRgba8:      return Format::RGBA8_UNORM;
-            case spv::ImageFormatRgba8Snorm: return Format::RGBA8_UNORM;
-            default:                        return Format::UNKNOWN;
+            case spv::ImageFormatRgba8Snorm: return Format::RGBA8_SNORM;
+            case spv::ImageFormatRgba8ui:    return Format::RGBA8_UINT;
+            case spv::ImageFormatRgba8i:     return Format::RGBA8_SINT;
+            default: break;
+            }
+
+            const spirv_cross::SPIRType& sampled = compiler.get_type(elementType->image.type);
+            switch (sampled.basetype)
+            {
+            case spirv_cross::SPIRType::UInt: return Format::R32_UINT;
+            case spirv_cross::SPIRType::Int:  return Format::R32_SINT;
+            default:
+                return elementType->image.dim == spv::DimBuffer ? Format::R32_FLOAT : Format::RGBA8_UNORM;
             }
         }
 
@@ -163,6 +193,7 @@ namespace nvrhi::metal
 
                         // A texture buffer holds the typed buffer views of NVRHI.
                         entry.bufferArray = elementType->image.dim == spv::DimBuffer;
+                        entry.dimension = getTextureDimension(*elementType);
                         entry.format = getTextureFormat(compiler, resource.id);
                     }
 
@@ -298,7 +329,9 @@ namespace nvrhi::metal
                 resource.index = entry.index;
                 resource.count = entry.count;
                 resource.bufferArray = entry.bufferArray;
+                resource.dimension = entry.dimension;
                 resource.format = entry.format;
+                resource.stage = stage;
                 out.resources.push_back(resource);
             }
 

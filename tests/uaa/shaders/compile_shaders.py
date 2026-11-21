@@ -129,6 +129,11 @@ def main() -> int:
         ("cs_bindings_all", "cs_bindings_all.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.1"], True, "vulkan1.1"),
         ("cs_multi_set", "cs_multi_set.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.1"], True, "vulkan1.1"),
         ("cs_bindless_tex_buf", "cs_bindless_tex_buf.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
+        ("cs_bindless_two_tex_kinds", "cs_bindless_two_tex_kinds.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
+        ("cs_bindless_cube_sparse", "cs_bindless_cube_sparse.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
+        ("cs_bindless_uint_sparse", "cs_bindless_uint_sparse.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
+        ("vs_bindless_stage", "vs_bindless_stage.hlsl", "main", "vs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
+        ("ps_bindless_stage", "ps_bindless_stage.hlsl", "main", "ps_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
         ("cs_wave_lane", "cs_wave_lane.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.1"], True, "vulkan1.1"),
         ("vs_fullscreen_tri", "vs_fullscreen_tri.hlsl", "main", "vs_6_0", ["-fspv-target-env=vulkan1.1"], True, "vulkan1.1"),
         ("ps_solid_color", "ps_solid_color.hlsl", "main", "ps_6_0", ["-fspv-target-env=vulkan1.1"], True, "vulkan1.1"),
@@ -152,6 +157,11 @@ def main() -> int:
         "cs_bindings_all",
         "cs_multi_set",
         "cs_bindless_tex_buf",
+        "cs_bindless_two_tex_kinds",
+        "cs_bindless_cube_sparse",
+        "cs_bindless_uint_sparse",
+        "vs_bindless_stage",
+        "ps_bindless_stage",
         "cs_metal_custom_entry",
     }
 
@@ -226,6 +236,7 @@ def main() -> int:
 
         if fxc and target in ("cs_6_0", "vs_6_0", "ps_6_0") and name not in {
             "cs_spec_const", "cs_multi_set", "cs_bindless_tex_buf", "cs_wave_lane", "cs_metal_custom_entry",
+            "cs_bindless_two_tex_kinds", "cs_bindless_cube_sparse", "cs_bindless_uint_sparse", "vs_bindless_stage", "ps_bindless_stage",
         }:
             dxbc_path = dxbc_dir / f"{name}.dxbc"
             dxbc_target = target[:2] + "_5_0"

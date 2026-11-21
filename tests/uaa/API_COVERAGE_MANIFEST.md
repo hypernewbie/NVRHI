@@ -62,7 +62,7 @@ Known gaps include D3D11/D3D12 native extension methods that have no dedicated c
 | `createEventQuery()` | `QRY.Event`, `QRY.EventQueues`, `QRY.Invalid` | MAPPED | Event query lifecycle and cross-queue signalling |
 | `setEventQuery(IEventQuery*, CommandQueue)` | `QRY.Event`, `QRY.EventQueues` | MAPPED | Tested on Graphics/Compute/Copy queues |
 | `pollEventQuery(IEventQuery*)` | `QRY.Event`, `QRY.Invalid` | MAPPED | Verified false-to-true completion transition |
-| `waitEventQuery(IEventQuery*)` | `QRY.Event`, `QRY.EventQueues` | MAPPED | Blocking GPU-to-CPU sync |
+| `waitEventQuery(IEventQuery*)` | `QRY.Event`, `QRY.EventQueues`, `SUB.CompletionOrder`, `SUB.MetalHookCompletionError` | MAPPED | Blocking GPU-to-CPU sync, including a simulated Metal completion error |
 | `resetEventQuery(IEventQuery*)` | `QRY.Event`, `QRY.Invalid` | MAPPED | Resets query state for reuse |
 | `createTimerQuery()` | `QRY.Timer`, `QRY.Unsupported`, `QRY.Invalid` | GATED_OPTIONAL | Timer query creation and lifecycle |
 | `pollTimerQuery(ITimerQuery*)` | `QRY.Timer`, `QRY.Unsupported` | GATED_OPTIONAL | Completion polling before/after resolve |
@@ -77,20 +77,20 @@ Known gaps include D3D11/D3D12 native extension methods that have no dedicated c
 | `createMeshletPipeline(const MeshletPipelineDesc&, IFramebuffer*)` | `GFX.Framebuffer`, `MSH.Direct` | GATED_OPTIONAL | Deprecated `IFramebuffer*` overload, gated by `Feature::Meshlets` |
 | `createRayTracingPipeline(const rt::PipelineDesc&)` | `RT.Pipeline`, `RT.ShaderTable` | GATED_OPTIONAL | Gated by `Feature::RayTracingPipeline` |
 | `createBindingLayout(const BindingLayoutDesc&)` | `BND.Layout`, `BND.Ranges`, `BND.StageIsolation`, `BND.PushConstants` | MAPPED | Regular binding layouts across spaces/sets |
-| `createBindlessLayout(const BindlessLayoutDesc&)` | `TBL.CreateWrite`, `TBL.UpdateAfterBind`, `STR.Resize` | GATED_OPTIONAL | Immutable and mutable layout creation paths are exercised where supported. |
+| `createBindlessLayout(const BindlessLayoutDesc&)` | `TBL.CreateWrite`, `TBL.UpdateAfterBind`, `TBL.MetalUabRejected`, `STR.Resize` | GATED_OPTIONAL | Metal rejects update-after-bind layouts. Other layout paths run where supported. |
 | `createBindingSet(const BindingSetDesc&, IBindingLayout*)` | `BND.BindingSet`, `BND.BindingLifetime`, `BND.Invalid`, `UTL.BindingSet` | MAPPED | All resource binding types + `trackLiveness` |
 | `createDescriptorTable(IBindingLayout*)` | `TBL.CreateWrite`, `TBL.CreateWrite`, `STR.Resize` | GATED_OPTIONAL | Gated on bindless-capable backends |
 | `resizeDescriptorTable(IDescriptorTable*, uint32_t, bool)` | `TBL.CreateWrite`, `STR.Resize` | GATED_OPTIONAL | Grow, shrink, `keepContents` true/false |
-| `writeDescriptorTable(IDescriptorTable*, const BindingSetItem&)` | `TBL.CreateWrite`, `TBL.CreateWrite`, `TBL.UpdateAfterBind`, `STR.Resize` | GATED_OPTIONAL | Texture SRV, buffer SRV, and null (`None`) slots |
+| `writeDescriptorTable(IDescriptorTable*, const BindingSetItem&)` | `TBL.CreateWrite`, `TBL.UpdateAfterBind`, `TBL.PreSubmitUpdate`, `TBL.UintSparse`, `STR.Resize` | GATED_OPTIONAL | Metal does not support update-after-bind. |
 | `createOpacityMicromap(const rt::OpacityMicromapDesc&)` | `RT.OpacityMicromap`, `DEV.OptionalFailures` | GATED_OPTIONAL | Gated by `Feature::RayTracingOpacityMicromap` |
 | `createAccelStruct(const rt::AccelStructDesc&)` | `RT.BottomLevel`, `RT.TopLevel`, `RT.InlineQuery`, `RT.Pipeline`, `STA.RayStructures` | GATED_OPTIONAL |  |
 | `getAccelStructMemoryRequirements(rt::IAccelStruct*)` | `RT.Placement`, `HEAP.Requirements` | GATED_OPTIONAL |  |
 | `getClusterOperationSizeInfo(const rt::cluster::OperationParams&)` | `RT.Clusters`, `DEV.OptionalFailures` | GATED_OPTIONAL | Gated by `Feature::RayTracingClusters` |
 | `bindAccelStructMemory(rt::IAccelStruct*, IHeap*, uint64_t)` | `RT.Placement`, `HEAP.Placement` | GATED_OPTIONAL |  |
 | `createCommandList(const CommandListParameters&)` | `DEV.CreateDestroy`, `SUB.QueueDependencies`, `STR.Threads` | MAPPED | Graphics, Compute, Copy, immediate vs deferred |
-| `executeCommandLists(ICommandList* const*, size_t, CommandQueue)` | `SUB.QueueDependencies`, `CMP.MultiQueue`, `STR.Threads`, `STR.InFlight` | MAPPED | Multi-list batch and multi-queue submission |
-| `queueWaitForCommandList(CommandQueue, CommandQueue, uint64_t)` | `SUB.QueueDependencies`, `CMP.MultiQueue`, `QRY.EventQueues` | GATED_OPTIONAL | Tested when `ComputeQueue` or `CopyQueue` is supported |
-| `waitForIdle()` | `DEV.CreateDestroy`, `STR.InFlight`, `STR.Resize`, `STR.Threads` | MAPPED | Full queue drain |
+| `executeCommandLists(ICommandList* const*, size_t, CommandQueue)` | `SUB.ConcurrentSubmission`, `SUB.CompletionOrder`, `SUB.MetalMissingCommandBuffer`, `SUB.MetalHookSerialOrder`, `STR.InFlight` | MAPPED | Batch, concurrent and multi-queue submission; the Metal hook forces the serial-to-commit interval. |
+| `queueWaitForCommandList(CommandQueue, CommandQueue, uint64_t)` | `SUB.QueueDependencies`, `SUB.CompletionOrder`, `SUB.MetalHookWaitAllocation`, `SUB.MetalHookCompletionError` | GATED_OPTIONAL | Metal tests include allocation and completion failure injection. |
+| `waitForIdle()` | `DEV.CreateDestroy`, `SUB.MetalHookCompletionError`, `STR.InFlight`, `STR.Resize`, `STR.Threads` | MAPPED | Full queue drain and simulated Metal completion failure |
 | `createCommandListLifetimeTracker(CommandQueue)` | `SUB.LifetimeTracker`, `STR.Threads` | GATED_OPTIONAL | Supported on Vulkan and D3D12; null/error on Metal and D3D11 |
 | `runGarbageCollection()` | `DEV.GarbageCollection`, `BUF.Lifetime`, `STR.Resize`, `STR.Soak` | MAPPED | Deferred resource reclamation |
 | `queryFeatureSupport(Feature, void*, size_t)` | `DEV.Capabilities`, `OPT.VRS`, `OPT.Wave`, `RT.Clusters` | MAPPED | Queries all 27 features + info structs |

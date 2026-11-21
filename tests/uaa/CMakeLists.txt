@@ -95,6 +95,11 @@ if(NVRHI_WITH_METAL)
     set(_uaa_has_metal 1)
     target_sources(nvrhi_uaa_tests PRIVATE uaa_metal.mm)
     target_link_libraries(nvrhi_uaa_tests PRIVATE ${nvrhi_metal_target})
+    if(NVRHI_METAL_TEST_HOOKS)
+        target_sources(nvrhi_uaa_tests PRIVATE uaa_metal_submission.mm)
+        target_compile_definitions(nvrhi_uaa_tests PRIVATE NVRHI_METAL_TEST_HOOKS=1)
+        set_source_files_properties(uaa_metal_submission.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    endif()
     if(APPLE)
         set_source_files_properties(uaa_metal.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     endif()
@@ -196,6 +201,32 @@ endfunction()
 
 if(NVRHI_WITH_METAL)
     nvrhi_uaa_register_backend_tests(metal)
+    add_test(NAME uaa_metal_teardown_raw
+        COMMAND nvrhi_uaa_tests --backend metal --validation off --filter SUB.MetalTeardown --timeout 15)
+    set_tests_properties(uaa_metal_teardown_raw PROPERTIES
+        LABELS "uaa;metal;isolated" TIMEOUT 25 SKIP_RETURN_CODE 77
+        ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    if(NVRHI_WITH_VALIDATION)
+        add_test(NAME uaa_metal_teardown_validation
+            COMMAND nvrhi_uaa_tests --backend metal --validation on --native-validation on --filter SUB.MetalTeardown --timeout 15)
+        set_tests_properties(uaa_metal_teardown_validation PROPERTIES
+            LABELS "uaa;metal;isolated;validation" TIMEOUT 25 SKIP_RETURN_CODE 77
+            ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    endif()
+    if(NVRHI_METAL_TEST_HOOKS)
+        add_test(NAME uaa_metal_submission_raw
+            COMMAND nvrhi_uaa_tests --backend metal --validation off --filter SUB.MetalHook* --timeout 15)
+        set_tests_properties(uaa_metal_submission_raw PROPERTIES
+            LABELS "uaa;metal;isolated" TIMEOUT 50 SKIP_RETURN_CODE 77
+            ENVIRONMENT "MTL_DEBUG_LAYER=1")
+        if(NVRHI_WITH_VALIDATION)
+            add_test(NAME uaa_metal_submission_validation
+                COMMAND nvrhi_uaa_tests --backend metal --validation on --native-validation on --filter SUB.MetalHook* --timeout 15)
+            set_tests_properties(uaa_metal_submission_validation PROPERTIES
+                LABELS "uaa;metal;isolated;validation" TIMEOUT 50 SKIP_RETURN_CODE 77
+                ENVIRONMENT "MTL_DEBUG_LAYER=1")
+        endif()
+    endif()
 endif()
 
 if(NVRHI_WITH_VULKAN)
