@@ -1295,6 +1295,56 @@ namespace nvrhi::uaa
             }
         }
 
+        void testTexMsaaArrayResolve(TestContext& ctx)
+        {
+            TestFixture& fix = requireFixture(ctx);
+            if (fix.api() != nvrhi::GraphicsAPI::METAL)
+                ctx.skip("Multisampled array support is not exposed by NVRHI");
+            nvrhi::IDevice* dev = fix.device();
+            nvrhi::TextureHandle source = dev->createTexture(
+                nvrhi::TextureDesc()
+                    .setDimension(nvrhi::TextureDimension::Texture2DMSArray)
+                    .setWidth(4).setHeight(4).setArraySize(3).setSampleCount(4)
+                    .setFormat(nvrhi::Format::RGBA8_UNORM).setIsRenderTarget(true)
+                    .enableAutomaticStateTracking(nvrhi::ResourceStates::CopyDest)
+                    .setDebugName("resolve_array_src"));
+            nvrhi::TextureHandle dest = dev->createTexture(
+                nvrhi::TextureDesc()
+                    .setDimension(nvrhi::TextureDimension::Texture2DArray)
+                    .setWidth(4).setHeight(4).setArraySize(3)
+                    .setFormat(nvrhi::Format::RGBA8_UNORM).setIsRenderTarget(true)
+                    .enableAutomaticStateTracking(nvrhi::ResourceStates::CopyDest)
+                    .setDebugName("resolve_array_dst"));
+            UAA_CHECK(source && dest, "Failed to create MSAA array resolve textures");
+
+            nvrhi::CommandListHandle cmd = dev->createCommandList();
+            UAA_CHECK(cmd != nullptr, "createCommandList returned null");
+            cmd->open();
+            cmd->clearTextureFloat(source, nvrhi::TextureSubresourceSet(0, 1, 0, 1), nvrhi::Color(1.f, 0.f, 0.f, 1.f));
+            cmd->clearTextureFloat(source, nvrhi::TextureSubresourceSet(0, 1, 1, 1), nvrhi::Color(0.f, 1.f, 0.f, 1.f));
+            cmd->clearTextureFloat(source, nvrhi::TextureSubresourceSet(0, 1, 2, 1), nvrhi::Color(0.f, 0.f, 1.f, 1.f));
+            cmd->resolveTexture(dest, nvrhi::TextureSubresourceSet(0, 1, 2, 1),
+                source, nvrhi::TextureSubresourceSet(0, 1, 1, 1));
+            cmd->resolveTexture(dest, nvrhi::TextureSubresourceSet(0, 1, 0, 1),
+                source, nvrhi::TextureSubresourceSet(0, 1, 2, 1));
+            cmd->resolveTexture(dest, nvrhi::TextureSubresourceSet(0, 1, 1, 1),
+                source, nvrhi::TextureSubresourceSet(0, 1, 0, 1));
+            cmd->close();
+            fix.submitAndWait(cmd);
+
+            const uint8_t expected[3][4] = { {0, 0, 255, 255}, {255, 0, 0, 255}, {0, 255, 0, 255} };
+            for (uint32_t slice = 0; slice < 3; ++slice)
+            {
+                std::vector<uint8_t> pixels;
+                fix.readbackTexture2D(dest, slice, 0, pixels);
+                UAA_CHECK_EQ(pixels.size(), size_t(4 * 4 * 4), "Resolved array slice size mismatch");
+                std::string diff;
+                for (size_t p = 0; p < 16; ++p)
+                    UAA_CHECK(TestFixture::checkPixelRgba8(&pixels[p * 4], expected[slice][0], expected[slice][1],
+                        expected[slice][2], expected[slice][3], 2, diff), "Resolved array slice mismatch: " + diff);
+            }
+        }
+
         // Tests upload->sample, UAV->sample, render->copy, and copy->render hazards within single command lists.
         void testTexReadWriteHazards(TestContext& ctx)
         {
@@ -1562,6 +1612,7 @@ namespace nvrhi::uaa
     UAA_REGISTER_TEST("TEX.DepthStencil", "core", testTexDepthStencil);
     UAA_REGISTER_TEST("TEX.Views", "core", testTexViews);
     UAA_REGISTER_TEST("TEX.Resolve", "core", testTexResolve);
+    UAA_REGISTER_TEST("TEX.MSAAArrayResolve", "core", testTexMsaaArrayResolve);
     UAA_REGISTER_TEST("TEX.ReadWriteHazards", "core", testTexReadWriteHazards);
     UAA_REGISTER_TEST("TEX.Invalid", "core,validation", testTexInvalid);
 } // namespace nvrhi::uaa

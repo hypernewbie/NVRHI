@@ -341,8 +341,22 @@ namespace nvrhi::metal
 
             if (model == spv::ExecutionModelGLCompute)
             {
+                spirv_cross::SpecializationConstant groupSizeConstants[3];
+                compiler.get_work_group_size_specialization_constants(groupSizeConstants[0], groupSizeConstants[1], groupSizeConstants[2]);
                 for (uint32_t i = 0; i < 3; ++i)
+                {
                     out.threadGroupSize[i] = compiler.get_execution_mode_argument(spv::ExecutionModeLocalSize, i);
+                    if (groupSizeConstants[i].id != 0)
+                    {
+                        if (!compiler.has_decoration(groupSizeConstants[i].id, spv::DecorationSpecId))
+                        {
+                            error = "derived workgroup size specialisation is not supported";
+                            return false;
+                        }
+                        out.threadGroupSizeSpecialized[i] = true;
+                        out.threadGroupSizeConstantId[i] = groupSizeConstants[i].constant_id;
+                    }
+                }
             }
 
             return true;

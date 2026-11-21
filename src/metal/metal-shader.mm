@@ -354,7 +354,10 @@ namespace nvrhi::metal
         // SPIRV-Cross renames the entry point when it collides with a reserved name.
         id<MTLFunction> function = resolveEntryFunction(m_Context, library, d);
         if (!function)
+        {
+            delete shader;
             return nullptr;
+        }
 
         shader->library = library;
         shader->function = function;
@@ -411,11 +414,10 @@ namespace nvrhi::metal
                 }
             }
 
+            // Metal can omit unused constants, including a workgroup size that the
+            // shader does not read. Vulkan ignores IDs absent from the shader too.
             if (!declaration)
-            {
-                m_Context.error("createShaderSpecialization: the shader declares no specialisation constant " + std::to_string(constant.constantID));
-                return nullptr;
-            }
+                continue;
 
             switch (declaration.type)
             {
@@ -469,7 +471,25 @@ namespace nvrhi::metal
         shader->baseShader = baseShader->baseShader ? baseShader->baseShader : ShaderHandle(_baseShader);
         shader->desc = baseShader->desc;
         shader->spirv = baseShader->spirv;
-        shader->translated = baseShader->translated;
+        const Shader* originalShader = baseShader->baseShader ? checked_cast<Shader*>(baseShader->baseShader.Get()) : baseShader;
+        shader->translated = originalShader->translated;
+        for (uint32_t i = 0; i < numConstants; ++i)
+        {
+            for (uint32_t dimension = 0; dimension < 3; ++dimension)
+            {
+                if (shader->translated.threadGroupSizeSpecialized[dimension]
+                    && shader->translated.threadGroupSizeConstantId[dimension] == constants[i].constantID)
+                {
+                    if (constants[i].value.u == 0)
+                    {
+                        m_Context.error("createShaderSpecialization: the workgroup size must be nonzero");
+                        delete shader;
+                        return nullptr;
+                    }
+                    shader->translated.threadGroupSize[dimension] = constants[i].value.u;
+                }
+            }
+        }
         shader->library = baseShader->library;
         shader->function = function;
         shader->source = baseShader->source;

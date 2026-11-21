@@ -418,6 +418,151 @@ namespace nvrhi::uaa
             verifyComputeCopyAddOutput(fix, ctx, job2);
         }
 
+        class ScopedGateSignal
+        {
+        public:
+            explicit ScopedGateSignal(IGpuGate* gate) : m_Gate(gate) { }
+            ~ScopedGateSignal() { if (m_Gate) m_Gate->signal(); }
+
+        private:
+            IGpuGate* m_Gate;
+        };
+
+        void testMetalTimerSubmission(TestContext& ctx)
+        {
+            TestFixture& fix = *ctx.fixture;
+            if (fix.api() != nvrhi::GraphicsAPI::METAL)
+                ctx.skip("Requires the Metal backend");
+
+            nvrhi::IDevice* dev = fix.device();
+            ComputeCopyAddJob job = buildComputeCopyAddJob(fix, ctx, 65536u, 7u, 0x55AAu, ctx.seed() ^ 0x308ull);
+            nvrhi::TimerQueryHandle query = dev->createTimerQuery();
+            UAA_CHECK(query != nullptr, "createTimerQuery returned null");
+            nvrhi::CommandListHandle cmd = dev->createCommandList();
+            UAA_CHECK(cmd != nullptr, "createCommandList returned null");
+            std::unique_ptr<IGpuGate> gate = fix.backend()->createGpuGate();
+            UAA_CHECK(gate != nullptr, "Metal GPU gate is unavailable");
+
+            for (uint32_t iteration = 0; iteration < 2; ++iteration)
+            {
+                if (iteration > 0)
+                    gate->reset();
+                cmd->open();
+                cmd->beginTimerQuery(query);
+                for (uint32_t i = 0; i < 4; ++i)
+                    recordComputeCopyAdd(cmd, job);
+                cmd->endTimerQuery(query);
+                cmd->close();
+
+                UAA_CHECK(!dev->pollTimerQuery(query), "Timer query became ready before submission");
+                UAA_CHECK_EQ(dev->getTimerQueryTime(query), 0.0f, "Unsubmitted timer query must return zero");
+
+                UAA_CHECK(gate->enqueueWait(nvrhi::CommandQueue::Graphics), "Failed to gate the GPU queue");
+                ScopedGateSignal releaseGate(gate.get());
+                UAA_CHECK(dev->executeCommandList(cmd, nvrhi::CommandQueue::Graphics) != 0, "Submission failed");
+                UAA_CHECK(!dev->pollTimerQuery(query), "Timer query became ready while the GPU was gated");
+                gate->signal();
+
+                UAA_CHECK(fix.waitWithWatchdog([&]() { return dev->pollTimerQuery(query); }, 2000u),
+                    "Submitted timer query did not resolve");
+                const float elapsed = dev->getTimerQueryTime(query);
+                UAA_CHECK(std::isfinite(elapsed) && elapsed > 0.0f, "Timer query must return a positive GPU interval");
+                dev->resetTimerQuery(query);
+            }
+            verifyComputeCopyAddOutput(fix, ctx, job);
+        }
+
+        void testMetalTimerNested(TestContext& ctx)
+        {
+            TestFixture& fix = *ctx.fixture;
+            if (fix.api() != nvrhi::GraphicsAPI::METAL)
+                ctx.skip("Requires the Metal backend");
+
+            nvrhi::IDevice* dev = fix.device();
+            ComputeCopyAddJob job = buildComputeCopyAddJob(fix, ctx, 65536u, 7u, 0x55AAu, ctx.seed() ^ 0x309ull);
+            nvrhi::BufferDesc copyDesc;
+            copyDesc.byteSize = uint64_t(job.count) * sizeof(uint32_t);
+            copyDesc.initialState = nvrhi::ResourceStates::CopyDest;
+            copyDesc.keepInitialState = true;
+            nvrhi::BufferHandle copy = dev->createBuffer(copyDesc);
+            nvrhi::TimerQueryHandle outer = dev->createTimerQuery();
+            nvrhi::TimerQueryHandle inner = dev->createTimerQuery();
+            nvrhi::CommandListHandle cmd = dev->createCommandList();
+            UAA_CHECK(copy && outer && inner && cmd, "Failed to create timer test resources");
+
+            cmd->open();
+            cmd->beginTimerQuery(outer);
+            cmd->copyBuffer(copy, 0, job.src, 0, copyDesc.byteSize);
+            cmd->beginTimerQuery(inner);
+            for (uint32_t i = 0; i < 4; ++i)
+                recordComputeCopyAdd(cmd, job);
+            cmd->endTimerQuery(inner);
+            cmd->copyBuffer(copy, 0, job.src, 0, copyDesc.byteSize);
+            cmd->endTimerQuery(outer);
+            cmd->close();
+            fix.submitAndWait(cmd);
+
+            UAA_CHECK(dev->pollTimerQuery(outer) && dev->pollTimerQuery(inner), "Nested timer queries did not resolve");
+            const float outerTime = dev->getTimerQueryTime(outer);
+            const float innerTime = dev->getTimerQueryTime(inner);
+            UAA_CHECK(std::isfinite(innerTime) && innerTime > 0.0f, "Inner timer did not measure a GPU interval");
+            UAA_CHECK(std::isfinite(outerTime) && outerTime >= innerTime, "Outer timer did not include the inner interval");
+            verifyComputeCopyAddOutput(fix, ctx, job);
+            std::vector<uint32_t> copied(job.count);
+            fix.readbackBuffer(copy, copied.data(), copyDesc.byteSize);
+            UAA_CHECK(copied == job.inputWords, "Timed buffer copy produced incorrect data");
+        }
+
+        void testMetalTimerLifetime(TestContext& ctx)
+        {
+            TestFixture& fix = *ctx.fixture;
+            if (fix.api() != nvrhi::GraphicsAPI::METAL)
+                ctx.skip("Requires the Metal backend");
+
+            nvrhi::IDevice* dev = fix.device();
+            UAA_CHECK(dev->waitForIdle(), "waitForIdle failed");
+            ExpectErrorsGuard errors(fix);
+
+            std::vector<nvrhi::TimerQueryHandle> queries;
+            for (uint32_t i = 0; i < 4096; ++i)
+            {
+                nvrhi::TimerQueryHandle query = dev->createTimerQuery();
+                if (!query)
+                    break;
+                queries.push_back(query);
+            }
+            const size_t capacity = queries.size();
+            UAA_CHECK(capacity > 1 && capacity < 4096, "Could not determine timer query pool capacity");
+            queries.clear();
+
+            nvrhi::TimerQueryHandle query = dev->createTimerQuery();
+            nvrhi::CommandListHandle cmd = dev->createCommandList();
+            UAA_CHECK(query != nullptr && cmd != nullptr, "Failed to create timer query or command list");
+            cmd->open();
+            cmd->beginTimerQuery(query);
+            cmd->endTimerQuery(query);
+            cmd->close();
+
+            std::unique_ptr<IGpuGate> gate = fix.backend()->createGpuGate();
+            UAA_CHECK(gate != nullptr && gate->enqueueWait(nvrhi::CommandQueue::Graphics), "Failed to gate the GPU queue");
+            ScopedGateSignal releaseGate(gate.get());
+            UAA_CHECK(dev->executeCommandList(cmd, nvrhi::CommandQueue::Graphics) != 0, "Submission failed");
+            query = nullptr;
+            cmd = nullptr;
+
+            for (size_t i = 0; i < capacity - 1; ++i)
+            {
+                nvrhi::TimerQueryHandle available = dev->createTimerQuery();
+                UAA_CHECK(available != nullptr, "Timer query pool exhausted too early");
+                queries.push_back(available);
+            }
+            const bool heldUntilCompletion = dev->createTimerQuery() == nullptr;
+            gate->signal();
+            UAA_CHECK(dev->waitForIdle(), "waitForIdle failed");
+            UAA_CHECK(heldUntilCompletion, "An in-flight timer query slot was recycled");
+            UAA_CHECK(dev->createTimerQuery() != nullptr, "Completed timer query slot was not recycled");
+        }
+
         void testUnsupportedOrUnresolvedTimerQuery(TestContext& ctx)
         {
             TestFixture& fix = *ctx.fixture;
@@ -641,6 +786,9 @@ namespace nvrhi::uaa
     UAA_REGISTER_TEST("QRY.Event", "core", testEventQueryLifecycle);
     UAA_REGISTER_TEST("QRY.EventQueues", "core", testEventQueryAcrossQueues);
     UAA_REGISTER_TEST("QRY.Timer", "core", testTimerQuery);
+    UAA_REGISTER_TEST("QRY.MetalTimerSubmission", "core", testMetalTimerSubmission);
+    UAA_REGISTER_TEST("QRY.MetalTimerNested", "core", testMetalTimerNested);
+    UAA_REGISTER_TEST("QRY.MetalTimerLifetime", "core", testMetalTimerLifetime);
     UAA_REGISTER_TEST("QRY.Unsupported", "core", testUnsupportedOrUnresolvedTimerQuery);
     UAA_REGISTER_TEST("QRY.Markers", "core", testNestedMarkers);
     UAA_REGISTER_TEST("QRY.Invalid", "core", testInvalidQueryUsage);

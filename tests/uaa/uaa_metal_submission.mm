@@ -265,6 +265,119 @@ namespace nvrhi::uaa
             UAA_CHECK_EQ(actual, 0x33333333u, "the retried consumer did not execute");
         }
 
+        static void testMetalHookTimerLifetime(TestContext& ctx)
+        {
+            StandaloneDevice device(*ctx.fixture);
+            UAA_CHECK(device.raw && device.active, "device creation failed");
+            TimerQueryHandle query = device.active->createTimerQuery();
+            CommandListHandle command = device.active->createCommandList();
+            UAA_CHECK(query && command, "timer resources are missing");
+            command->open();
+            command->beginTimerQuery(query);
+            command->endTimerQuery(query);
+            command->close();
+            query = nullptr;
+
+            NativeGate gate(device.raw);
+            UAA_CHECK(gate.valid(), "GPU gate creation failed");
+            UAA_CHECK(device.active->executeCommandList(command) != 0, "submission failed");
+            command = nullptr;
+            gate.release();
+            UAA_CHECK(device.active->waitForIdle(), "waitForIdle failed");
+            UAA_CHECK(!gate.timedOut(), "the GPU gate timed out");
+
+            query = device.active->createTimerQuery();
+            UAA_CHECK(query != nullptr, "timer query creation after completion failed");
+            device.active = nullptr;
+            device.raw = nullptr;
+            query = nullptr;
+        }
+
+        static void testMetalHookTimerConcurrent(TestContext& ctx)
+        {
+            StandaloneDevice device(*ctx.fixture);
+            UAA_CHECK(device.raw && device.active, "device creation failed");
+            constexpr uint32_t threadCount = 8;
+            constexpr uint32_t queriesPerThread = 4;
+            std::vector<TimerQueryHandle> queries(threadCount * queriesPerThread);
+            std::vector<std::thread> threads;
+            std::atomic<uint32_t> ready{0};
+            std::atomic<bool> start{false};
+            for (uint32_t thread = 0; thread < threadCount; ++thread)
+            {
+                threads.emplace_back([&, thread] {
+                    @autoreleasepool
+                    {
+                        ++ready;
+                        while (!start.load())
+                            std::this_thread::yield();
+                        for (uint32_t i = 0; i < queriesPerThread; ++i)
+                            queries[thread * queriesPerThread + i] = device.active->createTimerQuery();
+                    }
+                });
+            }
+            while (ready.load() != threadCount)
+                std::this_thread::yield();
+            start = true;
+            for (auto& thread : threads)
+                thread.join();
+            for (const auto& query : queries)
+                UAA_CHECK(query != nullptr, "concurrent timer query creation failed");
+
+            CommandListHandle command = device.active->createCommandList();
+            BufferHandle buffer = device.active->createBuffer(BufferDesc().setByteSize(1024 * 1024)
+                .setInitialState(ResourceStates::CopyDest).setKeepInitialState(true));
+            UAA_CHECK(command && buffer, "timer test resources are missing");
+            command->open();
+            for (const auto& query : queries)
+                command->beginTimerQuery(query);
+            command->clearBufferUInt(buffer, 0x12345678u);
+            for (auto it = queries.rbegin(); it != queries.rend(); ++it)
+                command->endTimerQuery(*it);
+            command->close();
+            UAA_CHECK(device.active->executeCommandList(command) != 0, "submission failed");
+            UAA_CHECK(device.active->waitForIdle(), "waitForIdle failed");
+            for (const auto& query : queries)
+                UAA_CHECK(device.active->getTimerQueryTime(query) > 0.f, "concurrently allocated timer did not resolve");
+        }
+
+        static void testMetalHookTimerFailure(TestContext& ctx)
+        {
+            ExpectErrorsGuard guard(*ctx.fixture);
+            StandaloneDevice device(*ctx.fixture);
+            UAA_CHECK(device.raw && device.active, "device creation failed");
+            TimerQueryHandle query = device.active->createTimerQuery();
+            CommandListHandle command = device.active->createCommandList();
+            BufferHandle buffer = device.active->createBuffer(BufferDesc().setByteSize(1024 * 1024)
+                .setInitialState(ResourceStates::CopyDest).setKeepInitialState(true));
+            UAA_CHECK(query && command && buffer, "timer resources are missing");
+
+            command->open();
+            command->beginTimerQuery(query);
+            command->clearBufferUInt(buffer, 0x12345678u);
+            command->endTimerQuery(query);
+            command->close();
+            UAA_CHECK(device.active->executeCommandList(command) != 0, "initial submission failed");
+            UAA_CHECK(device.active->getTimerQueryTime(query) > 0.f, "initial timer interval was not measured");
+            device.active->resetTimerQuery(query);
+
+            command->open();
+            command->beginTimerQuery(query);
+            command->endTimerQuery(query);
+            command->close();
+            metal::test::SubmissionHooks hooks;
+            hooks.failNextCompletion = true;
+            metal::test::setSubmissionHooks(device.raw, hooks);
+            UAA_CHECK(device.active->executeCommandList(command) != 0, "failed submission was not committed");
+            UAA_CHECK_EQ(device.active->getTimerQueryTime(query), 0.f, "failed submission returned a timer value");
+            UAA_CHECK(!device.active->waitForIdle(), "waitForIdle reported success after a completion error");
+            command = nullptr;
+            query = nullptr;
+            device.active = nullptr;
+            device.raw = nullptr;
+            UAA_CHECK_EQ(guard.errorCount(), size_t(1), "the completion error was not reported once");
+        }
+
         static void testMetalHookCompletionError(TestContext& ctx)
         {
             UAA_CHECK(ctx.fixture != nullptr, "Fixture must be initialised");
@@ -323,4 +436,7 @@ namespace nvrhi::uaa
     UAA_REGISTER_TEST("SUB.MetalHookSerialOrder", "core,metal,isolated", testMetalHookSerialOrder);
     UAA_REGISTER_TEST("SUB.MetalHookWaitAllocation", "core,metal,isolated", testMetalHookWaitAllocation);
     UAA_REGISTER_TEST("SUB.MetalHookCompletionError", "core,metal,isolated", testMetalHookCompletionError);
+    UAA_REGISTER_TEST("SUB.MetalHookTimerLifetime", "core,metal,isolated", testMetalHookTimerLifetime);
+    UAA_REGISTER_TEST("SUB.MetalHookTimerConcurrent", "core,metal,isolated", testMetalHookTimerConcurrent);
+    UAA_REGISTER_TEST("SUB.MetalHookTimerFailure", "core,metal,isolated", testMetalHookTimerFailure);
 }

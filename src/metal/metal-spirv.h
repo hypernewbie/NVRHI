@@ -67,6 +67,8 @@ namespace nvrhi::metal
         std::vector<ResourceBinding> resources;
         ShaderType stage = ShaderType::None;
         uint32_t threadGroupSize[3] = { 1, 1, 1 };
+        uint32_t threadGroupSizeConstantId[3] = { 0, 0, 0 };
+        bool threadGroupSizeSpecialized[3] = { false, false, false };
 
         bool usesPushConstants = false;
         uint32_t pushConstantBufferIndex = 0;

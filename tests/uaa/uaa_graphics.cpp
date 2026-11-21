@@ -1658,6 +1658,7 @@ namespace nvrhi::uaa
 
             nvrhi::TextureHandle msaaTex = createColorTarget(ctx, dev, 64, 64, nvrhi::Format::RGBA8_UNORM, "gfx_msaa_src", 1, 1, 4);
             nvrhi::TextureHandle resolveTex = createColorTarget(ctx, dev, 64, 64, nvrhi::Format::RGBA8_UNORM, "gfx_msaa_dst", 1, 1, 1);
+            nvrhi::TextureHandle secondResolveTex = createColorTarget(ctx, dev, 64, 64, nvrhi::Format::RGBA8_UNORM, "gfx_msaa_dst2", 1, 1, 1);
 
             nvrhi::FramebufferHandle fbMsaa = dev->createFramebuffer(nvrhi::FramebufferDesc().addColorAttachment(msaaTex));
             UAA_CHECK(fbMsaa != nullptr, "Failed to create MSAA framebuffer");
@@ -1690,6 +1691,7 @@ namespace nvrhi::uaa
             cmd->setPushConstants(&pc, sizeof(pc));
             cmd->draw(nvrhi::DrawArguments().setVertexCount(3));
             cmd->resolveTexture(resolveTex, nvrhi::AllSubresources, msaaTex, nvrhi::AllSubresources);
+            cmd->resolveTexture(secondResolveTex, nvrhi::AllSubresources, msaaTex, nvrhi::AllSubresources);
             cmd->close();
             fix.submitAndWait(cmd);
 
@@ -1697,6 +1699,9 @@ namespace nvrhi::uaa
             fix.readbackTexture2D(resolveTex, 0, 0, pixels);
             checkPixel(ctx, pixels, 64, 32, 32, 255, 0, 0, 255, 2, "GFX.MSAA resolved interior");
             checkPixel(ctx, pixels, 64, 4, 4, 20, 40, 60, 255, 2, "GFX.MSAA resolved background");
+            fix.readbackTexture2D(secondResolveTex, 0, 0, pixels);
+            checkPixel(ctx, pixels, 64, 32, 32, 255, 0, 0, 255, 2, "GFX.MSAA source preserved interior");
+            checkPixel(ctx, pixels, 64, 4, 4, 20, 40, 60, 255, 2, "GFX.MSAA source preserved background");
         }
 
         void testGfxPipelineReuse(TestContext& ctx)

@@ -118,7 +118,6 @@ namespace nvrhi::metal
         m_CurrentGraphicsPipeline = nullptr;
         m_ReferencedResources.clear();
         m_SampledTimerQueries.clear();
-        m_PendingCounterResolves.clear();
         m_CommandBuffer = [m_Device->getQueue() commandBuffer];
         m_IsOpen = true;
     }
@@ -126,22 +125,6 @@ namespace nvrhi::metal
     void CommandList::close()
     {
         endEncoder();
-
-        // The deferred resolves run after the last sample, in one blit encoder.
-        if (!m_PendingCounterResolves.empty() && m_Device->getCounterSampleBuffer())
-        {
-            id<MTLBlitCommandEncoder> encoder = getBlitEncoder();
-            for (const auto& query : m_PendingCounterResolves)
-            {
-                [encoder resolveCounters:m_Device->getCounterSampleBuffer()
-                    inRange:NSMakeRange(query->beginSampleIndex, 2)
-                    destinationBuffer:m_Device->getCounterResolveBuffer()
-                    destinationOffset:query->poolIndex * 2 * sizeof(MTLCounterResultTimestamp)];
-            }
-            m_PendingCounterResolves.clear();
-            endEncoder();
-        }
-
         m_IsOpen = false;
     }
 
@@ -599,7 +582,8 @@ namespace nvrhi::metal
                 attachment.level = resolved.baseMipLevel + mip;
                 attachment.slice = resolved.baseArraySlice + slice;
                 attachment.loadAction = MTLLoadActionLoad;
-                attachment.storeAction = MTLStoreActionMultisampleResolve;
+                // Resolve must not discard the multisampled source.
+                attachment.storeAction = MTLStoreActionStoreAndMultisampleResolve;
                 attachment.resolveTexture = destTexture->texture;
                 attachment.resolveLevel = dstSubresources.baseMipLevel + mip;
                 attachment.resolveSlice = dstSubresources.baseArraySlice + slice;
@@ -614,7 +598,7 @@ namespace nvrhi::metal
                         passDescriptor.stencilAttachment.level = resolved.baseMipLevel + mip;
                         passDescriptor.stencilAttachment.slice = resolved.baseArraySlice + slice;
                         passDescriptor.stencilAttachment.loadAction = MTLLoadActionLoad;
-                        passDescriptor.stencilAttachment.storeAction = MTLStoreActionMultisampleResolve;
+                        passDescriptor.stencilAttachment.storeAction = MTLStoreActionStoreAndMultisampleResolve;
                         passDescriptor.stencilAttachment.resolveTexture = destTexture->texture;
                         passDescriptor.stencilAttachment.resolveLevel = dstSubresources.baseMipLevel + mip;
                         passDescriptor.stencilAttachment.resolveSlice = dstSubresources.baseArraySlice + slice;
@@ -1542,7 +1526,13 @@ namespace nvrhi::metal
 
         sampleTimestamp(query, false);
 
-        query->resolved = false;
+        {
+            std::lock_guard< std::mutex > lock(query->mutex);
+            query->serial = 0;
+            query->started = false;
+            query->resolved = false;
+            query->failed = false;
+        }
         m_SampledTimerQueries.push_back(RefCountPtr<TimerQuery>(query));
     }
 
@@ -1556,10 +1546,7 @@ namespace nvrhi::metal
 
         sampleTimestamp(query, true);
 
-        // The resolve waits until the command list closes, because this driver
-        // generation stops taking samples in a command buffer once a resolve runs.
-        m_PendingCounterResolves.push_back(RefCountPtr<TimerQuery>(query));
-
+        std::lock_guard< std::mutex > lock(query->mutex);
         query->started = true;
     }
 

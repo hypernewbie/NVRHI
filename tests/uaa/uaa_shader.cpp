@@ -461,6 +461,56 @@ namespace nvrhi::uaa
         runSpecialisationTest(ctx, fix, baseShader, layout, bindingSet, outBuf, 7u, -3, 2.5f, "default_isolation");
     }
 
+    static void testShaderSpecialisationGroupSize(TestContext& ctx)
+    {
+        TestFixture& fix = requireFixture(ctx);
+        if (fix.api() != GraphicsAPI::VULKAN && fix.api() != GraphicsAPI::METAL)
+            ctx.skip("Workgroup specialisation fixture uses SPIR-V");
+        if (!fix.features().supports(Feature::ShaderSpecializations))
+            ctx.skip("ShaderSpecializations feature is not supported by this backend");
+
+        IDevice* dev = fix.device();
+        ShaderHandle base = fix.createShader("cs_spec_group_size", ShaderType::Compute, "main", fix.api() == GraphicsAPI::METAL);
+        UAA_CHECK(base != nullptr, "workgroup shader creation failed");
+        const ShaderSpecialization values[] = {
+            ShaderSpecialization::UInt32(0, 8), ShaderSpecialization::UInt32(1, 2), ShaderSpecialization::UInt32(2, 2)
+        };
+        ShaderHandle specialised = dev->createShaderSpecialization(base, values, 3);
+        UAA_CHECK(specialised != nullptr, "workgroup shader specialisation failed");
+        const ShaderSpecialization partialValue = ShaderSpecialization::UInt32(0, 6);
+        ShaderHandle partial = dev->createShaderSpecialization(specialised, &partialValue, 1);
+        UAA_CHECK(partial != nullptr, "partial workgroup specialisation failed");
+        const ShaderSpecialization unusedValue = ShaderSpecialization::UInt32(999, 42);
+        ShaderHandle unused = dev->createShaderSpecialization(base, &unusedValue, 1);
+        UAA_CHECK(unused != nullptr, "unused specialisation ID was not ignored");
+
+        BindingLayoutHandle layout = dev->createBindingLayout(
+            fix.makeBindingLayoutDesc(ShaderType::Compute).addItem(BindingLayoutItem::StructuredBuffer_UAV(0)));
+        BufferHandle output = createStorageBuffer(fix, 32 * sizeof(uint32_t), "shd_spec_group_out", 4, true);
+        UAA_CHECK(layout && output, "workgroup test resources are missing");
+        BindingSetHandle bindingSet = dev->createBindingSet(
+            BindingSetDesc().addItem(BindingSetItem::StructuredBuffer_UAV(0, output)), layout);
+        UAA_CHECK(bindingSet != nullptr, "workgroup binding set creation failed");
+
+        auto run = [&](IShader* shader, uint32_t groupSize, uint32_t packedDimensions)
+        {
+            ComputePipelineHandle pipeline = dev->createComputePipeline(
+                ComputePipelineDesc().setComputeShader(shader).addBindingLayout(layout));
+            UAA_CHECK(pipeline != nullptr, "workgroup pipeline creation failed");
+            std::array<uint32_t, 32> actual{};
+            fix.uploadBuffer(output, actual.data(), sizeof(actual));
+            dispatchAndWait(fix, pipeline, {bindingSet});
+            fix.readbackBuffer(output, actual.data(), sizeof(actual));
+            for (uint32_t i = 0; i < actual.size(); ++i)
+                UAA_CHECK_EQ(actual[i], i < groupSize ? packedDimensions : 0u, "specialised workgroup output mismatch");
+        };
+        run(base, 4, 0x010104u);
+        run(specialised, 32, 0x020208u);
+        run(partial, 6, 0x010106u);
+        run(unused, 4, 0x010104u);
+        run(base, 4, 0x010104u);
+    }
+
     static void testShaderLibrary(TestContext& ctx)
     {
         TestFixture& fix = requireFixture(ctx);
@@ -1055,6 +1105,7 @@ namespace nvrhi::uaa
     UAA_REGISTER_TEST("SHD.EntryPoints", "core", testShaderEntryPoints);
     UAA_REGISTER_TEST("SHD.InvalidBinary", "validation,isolated", testShaderInvalidBinary);
     UAA_REGISTER_TEST("SHD.Specialisation", "core", testShaderSpecialisation);
+    UAA_REGISTER_TEST("SHD.SpecialisationGroupSize", "core", testShaderSpecialisationGroupSize);
     UAA_REGISTER_TEST("SHD.Library", "core", testShaderLibrary);
     UAA_REGISTER_TEST("SHD.SpirvCompatibility", "core", testSpirvCompatibility);
     UAA_REGISTER_TEST("SHD.PipelineFailure", "core", testPipelineFailure);

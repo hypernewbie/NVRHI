@@ -20,7 +20,7 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-"""Compiles UAA HLSL shaders to SPIR-V (and DXIL if supported), validates
+"""Compiles UAA shaders to SPIR-V (and HLSL to DXIL if supported), validates
 them with spirv-val and spirv-cross MSL translation, freezes Metal SPIR-V
 fixtures, and writes shaders/manifest.json."""
 
@@ -109,6 +109,7 @@ def main() -> int:
     spirv_val = find_tool("spirv-val")
     spirv_cross = find_tool("spirv-cross")
     spirv_dis = find_tool("spirv-dis")
+    glslang = find_tool("glslangValidator")
 
     ver_proc = run_cmd([dxc, "--version"], check=False)
     compiler_version = (ver_proc.stdout or ver_proc.stderr).strip().splitlines()[0] if (ver_proc.stdout or ver_proc.stderr) else "unknown"
@@ -156,6 +157,7 @@ def main() -> int:
         "cs_raw_typed_rw",
         "cs_bindings_all",
         "cs_multi_set",
+        "cs_spec_group_size",
         "cs_bindless_tex_buf",
         "cs_bindless_two_tex_kinds",
         "cs_bindless_cube_sparse",
@@ -266,6 +268,27 @@ def main() -> int:
                 "sha256": sha256_file(dxbc_path),
             })
 
+    # GLSL supplies a workgroup-size specialisation fixture.
+    group_src = shaders_dir / "glsl" / "cs_spec_group_size.comp"
+    group_spv = spirv_dir / "cs_spec_group_size.spv"
+    group_flags = ["-V", "--target-env", "vulkan1.1"]
+    run_cmd([glslang] + group_flags + ["-o", str(group_spv), str(group_src)])
+    run_cmd([spirv_val, "--target-env", "vulkan1.1", str(group_spv)])
+    run_cmd([spirv_cross, "--msl", "--msl-version", "30000", "--entry", "main", str(group_spv)])
+    print(f"[OK] spirv: cs_spec_group_size.spv ({group_spv.stat().st_size} bytes)")
+    artifacts.append({
+        "name": "cs_spec_group_size",
+        "kind": "spirv",
+        "compiler": "glslangValidator",
+        "source": "glsl/cs_spec_group_size.comp",
+        "entry": "main",
+        "target": "vulkan1.1",
+        "flags": group_flags,
+        "output": "bin/spirv/cs_spec_group_size.spv",
+        "bytes": group_spv.stat().st_size,
+        "sha256": sha256_file(group_spv),
+    })
+
     # Compile and link multi-entry compute shader module.
     multi_src = hlsl_dir / "cs_multi_entry.hlsl"
     multi_spv = spirv_dir / "cs_multi_entry.spv"
@@ -322,7 +345,7 @@ def main() -> int:
             "kind": "frozen_metal",
             "source": f"bin/spirv/{name}.spv",
             "entry": entry_val,
-            "target": "cs_6_0",
+            "target": "vulkan1.1" if name == "cs_spec_group_size" else "cs_6_0",
             "flags": [],
             "output": f"frozen_metal/{name}.spv",
             "bytes": dst_spv.stat().st_size,

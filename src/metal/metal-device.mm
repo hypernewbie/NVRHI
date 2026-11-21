@@ -768,29 +768,28 @@ namespace nvrhi::metal
 
     TimerQueryHandle Device::createTimerQuery()
     {
-        // The counter sample buffer is created on the first timer query, so a device
-        // that never times its work allocates nothing.
-        if (!m_TimerQueryPoolInitAttempted)
-        {
-            if (!initTimerQueryPool())
-            {
-                m_Context.error("createTimerQuery: the device supports no timestamp counters");
-                return nullptr;
-            }
-        }
-
         std::lock_guard< std::mutex > lock(m_Mutex);
 
-        if (m_FreeTimerQueryIndices.empty())
+        // Create the counter resources on first use, under the device lock.
+        if (!m_TimerQueryPoolInitAttempted)
+            initTimerQueryPool();
+        if (!m_CounterSampleBuffer || !m_TimerQuerySampleTarget)
+        {
+            m_Context.error("createTimerQuery: timestamp counter resources are unavailable");
+            return nullptr;
+        }
+
+        std::lock_guard< std::mutex > allocatorLock(m_TimerQueryAllocator->mutex);
+        if (m_TimerQueryAllocator->freeIndices.empty())
         {
             m_Context.error("createTimerQuery: no free timer query slot is left, increase the pool size");
             return nullptr;
         }
 
         TimerQuery* query = new TimerQuery();
-        query->device = this;
-        query->poolIndex = uint32_t(m_FreeTimerQueryIndices.back());
-        m_FreeTimerQueryIndices.pop_back();
+        query->allocator = m_TimerQueryAllocator;
+        query->poolIndex = m_TimerQueryAllocator->freeIndices.back();
+        m_TimerQueryAllocator->freeIndices.pop_back();
         query->beginSampleIndex = query->poolIndex * 2;
         query->endSampleIndex = query->poolIndex * 2 + 1;
         return TimerQueryHandle::Create(query);
@@ -819,9 +818,8 @@ namespace nvrhi::metal
 
         MTLCounterSampleBufferDescriptor* descriptor = [[MTLCounterSampleBufferDescriptor alloc] init];
         descriptor.counterSet = timestampSet;
-        // A shared counter sample buffer resolves to zeros on this driver generation,
-        // so the raw samples stay private until the resolve.
-        descriptor.storageMode = MTLStorageModePrivate;
+        // Resolve the shared samples on the CPU after the submission completes.
+        descriptor.storageMode = MTLStorageModeShared;
         descriptor.sampleCount = c_TimerQueryPoolSize * 2;
 
         NSError* error = nil;
@@ -829,73 +827,69 @@ namespace nvrhi::metal
         if (!m_CounterSampleBuffer)
             return false;
 
-        // The resolved timestamps are read by the CPU after the submission completed,
-        // so the resolve buffer is shared storage.
-        m_CounterResolveBuffer = [m_Context.device newBufferWithLength:c_TimerQueryPoolSize * 2 * sizeof(MTLCounterResultTimestamp)
-            options:MTLResourceStorageModeShared];
-        if (!m_CounterResolveBuffer)
-        {
-            m_CounterSampleBuffer = nil;
+        MTLTextureDescriptor* targetDescriptor = [[MTLTextureDescriptor alloc] init];
+        targetDescriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
+        targetDescriptor.width = 1;
+        targetDescriptor.height = 1;
+        targetDescriptor.usage = MTLTextureUsageRenderTarget;
+        targetDescriptor.storageMode = MTLStorageModePrivate;
+        m_TimerQuerySampleTarget = [m_Context.device newTextureWithDescriptor:targetDescriptor];
+        if (!m_TimerQuerySampleTarget)
             return false;
-        }
 
-        m_FreeTimerQueryIndices.resize(c_TimerQueryPoolSize);
+        m_TimerQueryAllocator->freeIndices.resize(c_TimerQueryPoolSize);
         for (uint32_t i = 0; i < c_TimerQueryPoolSize; ++i)
-            m_FreeTimerQueryIndices[i] = int32_t(c_TimerQueryPoolSize - 1 - i);
+            m_TimerQueryAllocator->freeIndices[i] = c_TimerQueryPoolSize - 1 - i;
 
         return true;
     }
 
-    void Device::releaseTimerQueryIndex(uint32_t poolIndex)
-    {
-        std::lock_guard< std::mutex > lock(m_Mutex);
-        m_FreeTimerQueryIndices.push_back(int32_t(poolIndex));
-    }
-
-    id<MTLTexture> Device::getTimerQuerySampleTarget()
-    {
-        if (!m_TimerQuerySampleTarget)
-        {
-            MTLTextureDescriptor* descriptor = [[MTLTextureDescriptor alloc] init];
-            descriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
-            descriptor.width = 1;
-            descriptor.height = 1;
-            descriptor.usage = MTLTextureUsageRenderTarget;
-            descriptor.storageMode = MTLStorageModePrivate;
-            m_TimerQuerySampleTarget = [m_Context.device newTextureWithDescriptor:descriptor];
-        }
-
-        return m_TimerQuerySampleTarget;
-    }
-
     TimerQuery::~TimerQuery()
     {
-        if (device)
-            device->releaseTimerQueryIndex(poolIndex);
+        if (allocator)
+        {
+            std::lock_guard< std::mutex > lock(allocator->mutex);
+            allocator->freeIndices.push_back(poolIndex);
+        }
     }
 
     bool Device::pollTimerQuery(ITimerQuery* _query)
     {
         TimerQuery* query = checked_cast<TimerQuery*>(_query);
-        if (!query || !query->started)
+        if (!query)
+            return false;
+
+        std::lock_guard< std::mutex > queryLock(query->mutex);
+        if (!query->started || query->serial == 0)
             return false;
 
         if (query->resolved)
             return true;
 
-        // The resolve buffer holds the timestamps of the pair only after the
-        // submission that sampled them completed.
+        // Resolve only after the submission that sampled the pair completed.
         {
             std::lock_guard< std::mutex > lock(m_Completion->mutex);
             if (m_Completion->lastCompletedSerial < query->serial)
                 return false;
         }
 
-        const MTLCounterResultTimestamp* results =
-            (const MTLCounterResultTimestamp*)m_CounterResolveBuffer.contents + query->poolIndex * 2;
+        if (query->failed)
+        {
+            query->time = 0.f;
+            query->resolved = true;
+            return true;
+        }
 
-        // A sample that hit an error reads back as the error value, and a pair that
-        // was sampled but never resolved stays at zero. Both cases report no time.
+        NSData* data = [m_CounterSampleBuffer resolveCounterRange:NSMakeRange(query->beginSampleIndex, 2)];
+        if (!data || data.length < 2 * sizeof(MTLCounterResultTimestamp))
+        {
+            query->time = 0.f;
+            query->resolved = true;
+            return true;
+        }
+        const MTLCounterResultTimestamp* results = (const MTLCounterResultTimestamp*)data.bytes;
+
+        // Samples that fail to resolve report no time.
         if (results[0].timestamp == MTLCounterErrorValue || results[1].timestamp == MTLCounterErrorValue
             || results[0].timestamp == 0 || results[1].timestamp == 0)
         {
@@ -917,14 +911,26 @@ namespace nvrhi::metal
     float Device::getTimerQueryTime(ITimerQuery* _query)
     {
         TimerQuery* query = checked_cast<TimerQuery*>(_query);
-        if (!query || !query->started)
+        if (!query)
             return 0.f;
 
-        while (!pollTimerQuery(query))
-            ;
+        uint64_t serial;
+        {
+            std::lock_guard< std::mutex > lock(query->mutex);
+            if (!query->started || query->serial == 0)
+                return 0.f;
+            serial = query->serial;
+        }
 
+        {
+            std::unique_lock< std::mutex > lock(m_Completion->mutex);
+            m_Completion->condition.wait(lock, [this, serial] { return m_Completion->lastCompletedSerial >= serial; });
+        }
+        if (!pollTimerQuery(query))
+            return 0.f;
+
+        std::lock_guard< std::mutex > lock(query->mutex);
         query->started = false;
-
         return query->time;
     }
 
@@ -933,8 +939,11 @@ namespace nvrhi::metal
         TimerQuery* query = checked_cast<TimerQuery*>(_query);
         if (query)
         {
+            std::lock_guard< std::mutex > lock(query->mutex);
+            query->serial = 0;
             query->started = false;
             query->resolved = false;
+            query->failed = false;
             query->time = 0.f;
         }
     }
@@ -1320,10 +1329,13 @@ namespace nvrhi::metal
 
         const uint64_t serial = ++m_LastSubmittedSerial;
 
-        // The timer queries this command list sampled resolve with the serial, so
-        // their results become readable once the submission completed.
-        for (const auto& query : list->takeSampledTimerQueries())
+        // Hold each query until the GPU has finished using its sample indices.
+        __block std::vector<RefCountPtr<TimerQuery>> sampledTimerQueries = list->takeSampledTimerQueries();
+        for (const auto& query : sampledTimerQueries)
+        {
+            std::lock_guard< std::mutex > lock(query->mutex);
             query->serial = serial;
+        }
         const auto completion = m_Completion;
         id<MTLSharedEvent> submissionEvent = m_SubmissionEvent;
         IMessageCallback* callback = m_Context.messageCallback;
@@ -1352,6 +1364,15 @@ namespace nvrhi::metal
             // Release dependent GPU waits and report the failure to host callers.
             if (failed && submissionEvent.signaledValue < serial)
                 submissionEvent.signaledValue = serial;
+            if (failed)
+            {
+                for (const auto& query : sampledTimerQueries)
+                {
+                    std::lock_guard< std::mutex > lock(query->mutex);
+                    query->failed = true;
+                }
+            }
+            sampledTimerQueries.clear();
             {
                 std::lock_guard< std::mutex > lock(completion->mutex);
                 if (failed && (completion->firstFailedSerial == 0 || serial < completion->firstFailedSerial))
