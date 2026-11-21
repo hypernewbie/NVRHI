@@ -461,6 +461,40 @@ namespace nvrhi::uaa
         runSpecialisationTest(ctx, fix, baseShader, layout, bindingSet, outBuf, 7u, -3, 2.5f, "default_isolation");
     }
 
+    static void testShader16Bit(TestContext& ctx)
+    {
+        TestFixture& fix = requireFixture(ctx);
+        if (fix.api() != GraphicsAPI::VULKAN && fix.api() != GraphicsAPI::METAL)
+            ctx.skip("The 16-bit shader fixture uses SPIR-V");
+        if (fix.api() == GraphicsAPI::VULKAN && !fix.deviceInfo().vulkanShader16Bit)
+            ctx.skip("16-bit shader arithmetic and uniform/storage access are not enabled");
+
+        IDevice* dev = fix.device();
+        ShaderHandle shader = fix.createShader("cs_shader_16bit", ShaderType::Compute, "main", fix.api() == GraphicsAPI::METAL);
+        BindingLayoutHandle layout = dev->createBindingLayout(fix.makeBindingLayoutDesc(ShaderType::Compute)
+            .addItem(BindingLayoutItem::ConstantBuffer(0)).addItem(BindingLayoutItem::StructuredBuffer_UAV(1)));
+        BufferHandle input = createConstantBuffer(fix, 256, "shd_16bit_input");
+        BufferHandle output = createStorageBuffer(fix, 24, "shd_16bit_output", 4, true);
+        UAA_CHECK(shader && layout && input && output, "16-bit shader resources are null");
+        BindingSetHandle binding = dev->createBindingSet(BindingSetDesc()
+            .addItem(BindingSetItem::ConstantBuffer(0, input)).addItem(BindingSetItem::StructuredBuffer_UAV(1, output)), layout);
+        ComputePipelineHandle pipeline = dev->createComputePipeline(ComputePipelineDesc().setComputeShader(shader).addBindingLayout(layout));
+        UAA_CHECK(binding && pipeline, "16-bit shader binding or pipeline is null");
+        auto run = [&](const std::array<uint16_t, 6>& inputData, const std::array<uint16_t, 12>& expected)
+        {
+            fix.uploadBuffer(input, inputData.data(), sizeof(inputData));
+            dispatchAndWait(fix, pipeline, { binding });
+            std::array<uint16_t, 12> actual = {};
+            fix.readbackBuffer(output, actual.data(), sizeof(actual));
+            for (size_t i = 0; i < expected.size(); ++i)
+                UAA_CHECK_EQ(actual[i], expected[i], "16-bit arithmetic or layout mismatch at element " + std::to_string(i));
+        };
+        run({ 0x3e00u, 0x4000u, 1000u, uint16_t(-300), 65534u, 5u },
+            { 0x3e00u, 0x4000u, 0x4200u, 0x4300u, 1000u, uint16_t(-300), 700u, 1300u, 65534u, 5u, 3u, 65529u });
+        run({ 0xc000u, 0x3400u, uint16_t(-1234), 3u, 1u, 4u },
+            { 0xc000u, 0x3400u, 0xb800u, 0xbf00u, uint16_t(-1234), 3u, uint16_t(-1231), uint16_t(-1237), 1u, 4u, 5u, 65533u });
+    }
+
     static void testShaderSpecialisationGroupSize(TestContext& ctx)
     {
         TestFixture& fix = requireFixture(ctx);
@@ -1115,6 +1149,7 @@ namespace nvrhi::uaa
     UAA_REGISTER_TEST("SHD.InvalidBinary", "validation,isolated", testShaderInvalidBinary);
     UAA_REGISTER_TEST("SHD.Specialisation", "core", testShaderSpecialisation);
     UAA_REGISTER_TEST("SHD.SpecialisationGroupSize", "core", testShaderSpecialisationGroupSize);
+    UAA_REGISTER_TEST("SHD.Shader16Bit", "core", testShader16Bit);
     UAA_REGISTER_TEST("SHD.Library", "core", testShaderLibrary);
     UAA_REGISTER_TEST("SHD.SpirvCompatibility", "core", testSpirvCompatibility);
     UAA_REGISTER_TEST("SHD.PipelineFailure", "core", testPipelineFailure);

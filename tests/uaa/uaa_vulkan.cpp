@@ -440,6 +440,7 @@ namespace nvrhi::uaa
             bool bufferDeviceAddressSupported = false;
             bool drawIndirectCount = false;
             bool samplerFilterMinmax = false;
+            bool shader16Bit = false;
             bool descriptorBindingUniformBufferUpdateAfterBind = false;
         };
 
@@ -609,6 +610,7 @@ namespace nvrhi::uaa
             enabledCore.geometryShader = supportedCore.geometryShader;
             enabledCore.tessellationShader = supportedCore.tessellationShader;
             enabledCore.shaderInt64 = supportedCore.shaderInt64;
+            enabledCore.shaderInt16 = supportedCore.shaderInt16;
             enabledCore.shaderFloat64 = supportedCore.shaderFloat64;
             enabledCore.imageCubeArray = supportedCore.imageCubeArray;
             enabledCore.textureCompressionBC = supportedCore.textureCompressionBC;
@@ -625,7 +627,10 @@ namespace nvrhi::uaa
                 enabledV11.multiview = queriedV11.multiview;
                 enabledV11.shaderDrawParameters = queriedV11.shaderDrawParameters;
                 enabledV11.samplerYcbcrConversion = queriedV11.samplerYcbcrConversion;
+                enabledV11.storageBuffer16BitAccess = queriedV11.storageBuffer16BitAccess;
+                enabledV11.uniformAndStorageBuffer16BitAccess = queriedV11.uniformAndStorageBuffer16BitAccess;
 
+                enabledV12.shaderFloat16 = queriedV12.shaderFloat16;
                 enabledV12.timelineSemaphore = queriedV12.timelineSemaphore;
                 enabledV12.bufferDeviceAddress = queriedV12.bufferDeviceAddress;
                 enabledV12.descriptorIndexing = queriedV12.descriptorIndexing;
@@ -897,6 +902,8 @@ namespace nvrhi::uaa
             outSetup.bufferDeviceAddressSupported = (enabledV12.bufferDeviceAddress == VK_TRUE);
             outSetup.drawIndirectCount = (enabledV12.drawIndirectCount == VK_TRUE);
             outSetup.samplerFilterMinmax = (enabledV12.samplerFilterMinmax == VK_TRUE);
+            outSetup.shader16Bit = enabledCore.shaderInt16 && enabledV12.shaderFloat16
+                && enabledV11.storageBuffer16BitAccess && enabledV11.uniformAndStorageBuffer16BitAccess;
             outSetup.descriptorBindingUniformBufferUpdateAfterBind =
                 (enabledV12.descriptorBindingUniformBufferUpdateAfterBind == VK_TRUE);
             return true;
@@ -2040,6 +2047,7 @@ namespace nvrhi::uaa
 #endif
                 m_DeviceInfo.vulkanDrawIndirectCount = setup.drawIndirectCount;
                 m_DeviceInfo.vulkanSamplerFilterMinmax = setup.samplerFilterMinmax;
+                m_DeviceInfo.vulkanShader16Bit = setup.shader16Bit;
                 m_DeviceInfo.nativeValidation = validationLayerEnabled && (m_DebugMessenger != VK_NULL_HANDLE);
                 m_DeviceInfo.enabledExtensions = m_InstanceExtensionNames;
                 for (const char* ext : setup.enabledExtensions)

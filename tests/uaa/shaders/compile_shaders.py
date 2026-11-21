@@ -163,6 +163,7 @@ def main() -> int:
         "cs_bindings_all",
         "cs_multi_set",
         "cs_spec_group_size",
+        "cs_shader_16bit",
         "cs_bindless_tex_buf",
         "cs_bindless_sampler",
         "cs_bindless_typed_uav",
@@ -282,26 +283,27 @@ def main() -> int:
                 "sha256": sha256_file(dxbc_path),
             })
 
-    # GLSL supplies a workgroup-size specialisation fixture.
-    group_src = shaders_dir / "glsl" / "cs_spec_group_size.comp"
-    group_spv = spirv_dir / "cs_spec_group_size.spv"
-    group_flags = ["-V", "--target-env", "vulkan1.1"]
-    run_cmd([glslang] + group_flags + ["-o", str(group_spv), str(group_src)])
-    run_cmd([spirv_val, "--target-env", "vulkan1.1", str(group_spv)])
-    run_cmd([spirv_cross, "--msl", "--msl-version", "30000", "--entry", "main", str(group_spv)])
-    print(f"[OK] spirv: cs_spec_group_size.spv ({group_spv.stat().st_size} bytes)")
-    artifacts.append({
-        "name": "cs_spec_group_size",
-        "kind": "spirv",
-        "compiler": "glslangValidator",
-        "source": "glsl/cs_spec_group_size.comp",
-        "entry": "main",
-        "target": "vulkan1.1",
-        "flags": group_flags,
-        "output": "bin/spirv/cs_spec_group_size.spv",
-        "bytes": group_spv.stat().st_size,
-        "sha256": sha256_file(group_spv),
-    })
+    # GLSL supplies fixtures for SPIR-V features not expressed by the HLSL tests.
+    for name, target in [("cs_spec_group_size", "vulkan1.1"), ("cs_shader_16bit", "vulkan1.2")]:
+        source = shaders_dir / "glsl" / f"{name}.comp"
+        output = spirv_dir / f"{name}.spv"
+        flags = ["-V", "--target-env", target]
+        run_cmd([glslang] + flags + ["-o", str(output), str(source)])
+        run_cmd([spirv_val, "--target-env", target, str(output)])
+        run_cmd([spirv_cross, "--msl", "--msl-version", "30000", "--entry", "main", str(output)])
+        print(f"[OK] spirv: {name}.spv ({output.stat().st_size} bytes)")
+        artifacts.append({
+            "name": name,
+            "kind": "spirv",
+            "compiler": "glslangValidator",
+            "source": f"glsl/{name}.comp",
+            "entry": "main",
+            "target": target,
+            "flags": flags,
+            "output": f"bin/spirv/{name}.spv",
+            "bytes": output.stat().st_size,
+            "sha256": sha256_file(output),
+        })
 
     # Compile and link multi-entry compute shader module.
     multi_src = hlsl_dir / "cs_multi_entry.hlsl"

@@ -988,6 +988,22 @@
       "sha256": "4f96615dbcfa338ffabca2810e723404fe751fb58d77f372b0b59cc2ec0ff3c9"
     },
     {
+      "name": "cs_shader_16bit",
+      "kind": "spirv",
+      "compiler": "glslangValidator",
+      "source": "glsl/cs_shader_16bit.comp",
+      "entry": "main",
+      "target": "vulkan1.2",
+      "flags": [
+        "-V",
+        "--target-env",
+        "vulkan1.2"
+      ],
+      "output": "bin/spirv/cs_shader_16bit.spv",
+      "bytes": 2792,
+      "sha256": "712666f01b6105a0fa5e0decbd8882d8d68df4bf6e5ba0c7ce197bb1b96c1fbe"
+    },
+    {
       "name": "cs_multi_entry",
       "kind": "spirv",
       "source": "hlsl/cs_multi_entry.hlsl",
@@ -1156,6 +1172,17 @@
       "output": "frozen_metal/cs_sampler_test.spv",
       "bytes": 2472,
       "sha256": "7a683ca8e42a732266774258dfff18dee85608b1b084e25603acc34ba3b3a2b9"
+    },
+    {
+      "name": "cs_shader_16bit",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_shader_16bit.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_shader_16bit.spv",
+      "bytes": 2792,
+      "sha256": "712666f01b6105a0fa5e0decbd8882d8d68df4bf6e5ba0c7ce197bb1b96c1fbe"
     },
     {
       "name": "cs_spec_group_size",

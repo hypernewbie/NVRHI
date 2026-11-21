@@ -54,7 +54,7 @@ Known gaps include D3D11/D3D12 native extension methods that have no dedicated c
 | `getBufferMemoryRequirements(IBuffer*)` | `BUF.MemoryRequirements`, `HEAP.Requirements` | GATED_OPTIONAL | Gated by `Feature::VirtualResources` |
 | `bindBufferMemory(IBuffer*, IHeap*, uint64_t)` | `HEAP.Placement`, `HEAP.PendingLifetime` | GATED_OPTIONAL | Gated by `Feature::VirtualResources` |
 | `createHandleForNativeBuffer(ObjectType, Object, const BufferDesc&)` | `NAT.ImportBufferTexture`, `NAT.BorrowedOwnership` | MAPPED | Imports native buffer handle and verifies non-owning lifetime |
-| `createShader(const ShaderDesc&, const void*, size_t)` | `SHD.Stages`, `SHD.EntryPoints`, `SHD.InvalidBinary`, `SHD.SpirvCompatibility`, `CMP.Direct`, `GFX.Draw` | MAPPED | SPIR-V, DXIL, DXBC (where applicable), and Metal entry points |
+| `createShader(const ShaderDesc&, const void*, size_t)` | `SHD.Stages`, `SHD.EntryPoints`, `SHD.InvalidBinary`, `SHD.SpirvCompatibility`, `SHD.Shader16Bit`, `CMP.Direct`, `GFX.Draw` | MAPPED | SPIR-V, DXIL, DXBC (where applicable), and Metal entry points |
 | `createShaderSpecialization(IShader*, const ShaderSpecialization*, uint32_t)` | `SHD.Specialisation` | GATED_OPTIONAL | Gated by `Feature::ShaderSpecializations` |
 | `createShaderLibrary(const void*, size_t)` | `SHD.Library`, `RT.Pipeline` | GATED_OPTIONAL | Tested on backends supporting shader libraries |
 | `createSampler(const SamplerDesc&)` | `SMP.Filters`, `SMP.Options` | MAPPED | Linear/point, address modes, border colour, comparison, reduction |
