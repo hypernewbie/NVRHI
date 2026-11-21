@@ -25,6 +25,8 @@
 #include <spirv_msl.hpp>
 
 #include <algorithm>
+#include <map>
+#include <set>
 
 namespace nvrhi::metal
 {
@@ -132,9 +134,8 @@ namespace nvrhi::metal
         const std::string& entryName,
         uint32_t mslVersionMajor,
         uint32_t mslVersionMinor,
-        uint32_t bindlessSet,
-        uint32_t bindlessCapacity,
-        bool useArgumentBuffer,
+        const std::vector<uint32_t>& bindlessCapacities,
+        bool useArgumentBuffers,
         TranslatedShader& out,
         std::string& error)
     {
@@ -237,20 +238,20 @@ namespace nvrhi::metal
                 if (entry.count != 0)
                     continue;
 
-                if (entry.descriptorSet != bindlessSet)
-                {
-                    error = "a runtime sized array outside the bindless descriptor set is not supported";
-                    return false;
-                }
-
-                if (bindlessCapacity == 0)
+                if (bindlessCapacities.empty())
                 {
                     usesBindless = true;
                     continue;
                 }
 
+                if (entry.descriptorSet >= bindlessCapacities.size())
+                {
+                    error = "a runtime sized array uses an unsupported descriptor set";
+                    return false;
+                }
+
                 entry.runtimeArray = true;
-                entry.count = bindlessCapacity;
+                entry.count = bindlessCapacities[entry.descriptorSet];
             }
 
             if (usesBindless)
@@ -259,22 +260,32 @@ namespace nvrhi::metal
                 return true;
             }
 
-            // Only a set containing runtime arrays can use the table argument buffer.
-            // Fixed-size resources in the same set still use the classic binding path.
-            useArgumentBuffer = useArgumentBuffer
-                && std::any_of(entries.begin(), entries.end(), [](const ResourceEntry& entry) { return entry.runtimeArray; })
-                && std::none_of(entries.begin(), entries.end(), [bindlessSet](const ResourceEntry& entry)
-                    { return entry.descriptorSet == bindlessSet && !entry.runtimeArray; });
+            // A set with fixed-size resources stays on the classic binding path.
+            std::set<uint32_t> argumentSets;
+            if (useArgumentBuffers)
+            {
+                for (const auto& entry : entries)
+                {
+                    if (entry.runtimeArray)
+                        argumentSets.insert(entry.descriptorSet);
+                }
+                for (const auto& entry : entries)
+                {
+                    if (!entry.runtimeArray)
+                        argumentSets.erase(entry.descriptorSet);
+                }
+            }
 
-            if (useArgumentBuffer)
+            if (!argumentSets.empty())
             {
                 options.argument_buffers = true;
                 options.argument_buffers_tier = spirv_cross::CompilerMSL::Options::ArgumentBuffersTier::Tier2;
                 compiler.set_msl_options(options);
-                compiler.set_argument_buffer_device_address_space(bindlessSet, true);
+                for (uint32_t set : argumentSets)
+                    compiler.set_argument_buffer_device_address_space(set, true);
                 for (const auto& entry : entries)
                 {
-                    if (entry.descriptorSet != bindlessSet)
+                    if (argumentSets.count(entry.descriptorSet) == 0)
                         compiler.add_discrete_descriptor_set(entry.descriptorSet);
                 }
             }
@@ -291,17 +302,18 @@ namespace nvrhi::metal
             });
 
             uint32_t nextBuffer = usesPushConstants ? 1 : 0;
-            const uint32_t argumentBufferIndex = nextBuffer;
-            if (useArgumentBuffer)
-                ++nextBuffer;
+            std::map<uint32_t, uint32_t> argumentBufferIndices;
+            std::map<uint32_t, uint32_t> nextArguments;
+            for (uint32_t set : argumentSets)
+                argumentBufferIndices[set] = nextBuffer++;
             uint32_t nextTexture = 0;
             uint32_t nextSampler = 0;
-            uint32_t nextArgument = 0;
 
             for (auto& entry : entries)
             {
-                if (useArgumentBuffer && entry.runtimeArray)
+                if (argumentSets.count(entry.descriptorSet) != 0)
                 {
+                    uint32_t& nextArgument = nextArguments[entry.descriptorSet];
                     if (entry.count > UINT32_MAX - nextArgument)
                     {
                         error = "bindless argument buffer indices exceed the supported range";
@@ -342,14 +354,15 @@ namespace nvrhi::metal
                 compiler.add_msl_resource_binding(binding);
             }
 
-            if (useArgumentBuffer)
+            for (const auto& argumentBuffer : argumentBufferIndices)
             {
                 spirv_cross::MSLResourceBinding binding;
                 binding.stage = model;
-                binding.desc_set = bindlessSet;
+                binding.desc_set = argumentBuffer.first;
                 binding.binding = spirv_cross::kArgumentBufferBinding;
-                binding.msl_buffer = argumentBufferIndex;
+                binding.msl_buffer = argumentBuffer.second;
                 compiler.add_msl_resource_binding(binding);
+                out.argumentBuffers.push_back({ argumentBuffer.first, argumentBuffer.second });
             }
 
             if (usesPushConstants)
@@ -384,8 +397,6 @@ namespace nvrhi::metal
 
             out.usesPushConstants = usesPushConstants;
             out.pushConstantBufferIndex = 0;
-            out.usesArgumentBuffer = useArgumentBuffer;
-            out.argumentBufferIndex = argumentBufferIndex;
             out.stage = stage;
 
             if (model == spv::ExecutionModelGLCompute)

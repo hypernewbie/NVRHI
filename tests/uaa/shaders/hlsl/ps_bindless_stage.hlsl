@@ -24,7 +24,11 @@
 // set at binding 1. Paired with vs_bindless_stage.hlsl, whose vertex array
 // sits at binding 0, so each stage has its own array.
 
+#if defined(UAA_SEPARATE_SETS)
+[[vk::binding(0, 2)]] Texture2D<float4> PixTable[] : register(t0, space1);
+#else
 [[vk::binding(1, 0)]] Texture2D<float4> PixTable[] : register(t1, space0);
+#endif
 [[vk::binding(1, 1)]] SamplerState Samp : register(s1, space2);
 
 struct PSIn

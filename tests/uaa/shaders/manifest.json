@@ -395,6 +395,58 @@
       "sha256": "737da3c5b7c779b5d7bd42687bbf5260241b45ebe09532768040d3e985a457cb"
     },
     {
+      "name": "cs_bindless_two_sets",
+      "kind": "spirv",
+      "source": "hlsl/cs_bindless_two_sets.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2"
+      ],
+      "output": "bin/spirv/cs_bindless_two_sets.spv",
+      "bytes": 2200,
+      "sha256": "ec661239b68c32b87c5fc545e8b3b6ef5d831c844d107f50ecf7dbe2feddc60f"
+    },
+    {
+      "name": "cs_bindless_two_sets",
+      "kind": "dxil",
+      "source": "hlsl/cs_bindless_two_sets.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_bindless_two_sets.dxil",
+      "bytes": 3928,
+      "sha256": "f6119c9b0105039fcf6da732e3b3356d69922725bb2b451d25861fc01737e685"
+    },
+    {
+      "name": "cs_bindless_two_sets_explicit",
+      "kind": "spirv",
+      "source": "hlsl/cs_bindless_two_sets_explicit.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2"
+      ],
+      "output": "bin/spirv/cs_bindless_two_sets_explicit.spv",
+      "bytes": 2200,
+      "sha256": "0f3bf08e6ca939fa4f63274f984510f46f6b9bd0c127e272a87ad93c02eb48fa"
+    },
+    {
+      "name": "cs_bindless_two_sets_explicit",
+      "kind": "dxil",
+      "source": "hlsl/cs_bindless_two_sets_explicit.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_bindless_two_sets_explicit.dxil",
+      "bytes": 3928,
+      "sha256": "f6119c9b0105039fcf6da732e3b3356d69922725bb2b451d25861fc01737e685"
+    },
+    {
       "name": "cs_bindless_two_tex_kinds",
       "kind": "spirv",
       "source": "hlsl/cs_bindless_two_tex_kinds.hlsl",
@@ -523,6 +575,32 @@
       "output": "bin/dxil/ps_bindless_stage.dxil",
       "bytes": 3900,
       "sha256": "9ac0fdd31cd54638ebb7a11e69fda1e465ccef3c42db9ba2d208cea5132f0375"
+    },
+    {
+      "name": "ps_bindless_separate_sets",
+      "kind": "spirv",
+      "source": "hlsl/ps_bindless_separate_sets.hlsl",
+      "entry": "main",
+      "target": "ps_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2"
+      ],
+      "output": "bin/spirv/ps_bindless_separate_sets.spv",
+      "bytes": 960,
+      "sha256": "7ca47cab4354b93f2fa1d877600f8865e448dd41b795092e0f0c229baad29ad9"
+    },
+    {
+      "name": "ps_bindless_separate_sets",
+      "kind": "dxil",
+      "source": "hlsl/ps_bindless_separate_sets.hlsl",
+      "entry": "main",
+      "target": "ps_6_0",
+      "flags": [],
+      "output": "bin/dxil/ps_bindless_separate_sets.dxil",
+      "bytes": 3904,
+      "sha256": "b683831f32d82701f6aff8c132962cd786a5efc8d8544cf809b924a658d98434"
     },
     {
       "name": "cs_wave_lane",
@@ -970,6 +1048,28 @@
       "sha256": "b1027d1230426dd28ad352a4d65c6215d5735a7c06cb98f2680e295b91c6e4ad"
     },
     {
+      "name": "cs_bindless_two_sets",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_bindless_two_sets.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_bindless_two_sets.spv",
+      "bytes": 2200,
+      "sha256": "ec661239b68c32b87c5fc545e8b3b6ef5d831c844d107f50ecf7dbe2feddc60f"
+    },
+    {
+      "name": "cs_bindless_two_sets_explicit",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_bindless_two_sets_explicit.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_bindless_two_sets_explicit.spv",
+      "bytes": 2200,
+      "sha256": "0f3bf08e6ca939fa4f63274f984510f46f6b9bd0c127e272a87ad93c02eb48fa"
+    },
+    {
       "name": "cs_bindless_two_tex_kinds",
       "kind": "frozen_metal",
       "source": "bin/spirv/cs_bindless_two_tex_kinds.spv",
@@ -1067,6 +1167,17 @@
       "output": "frozen_metal/cs_spec_group_size.spv",
       "bytes": 984,
       "sha256": "4f96615dbcfa338ffabca2810e723404fe751fb58d77f372b0b59cc2ec0ff3c9"
+    },
+    {
+      "name": "ps_bindless_separate_sets",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/ps_bindless_separate_sets.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/ps_bindless_separate_sets.spv",
+      "bytes": 960,
+      "sha256": "7ca47cab4354b93f2fa1d877600f8865e448dd41b795092e0f0c229baad29ad9"
     },
     {
       "name": "ps_bindless_stage",

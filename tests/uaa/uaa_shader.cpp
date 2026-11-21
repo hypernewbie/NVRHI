@@ -905,6 +905,15 @@ namespace nvrhi::uaa
             std::array<uint32_t, 4> actual = {};
             fix.readbackBuffer(outBuf, actual.data(), sizeof(actual));
             UAA_CHECK_EQ(actual[0], 4007u, "cs_multi_set Out[0] mismatch");
+
+            ComputePipelineHandle reversed = dev->createComputePipeline(
+                ComputePipelineDesc().setComputeShader(cs).addBindingLayout(layout1).addBindingLayout(layout0));
+            UAA_CHECK(reversed != nullptr, "cs_multi_set reversed pipeline null");
+            const std::array<uint32_t, 4> updated = { 9u, 0u, 0u, 0u };
+            fix.uploadBuffer(inA, updated.data(), sizeof(updated));
+            dispatchAndWait(fix, reversed, { set1, set0 });
+            fix.readbackBuffer(outBuf, actual.data(), sizeof(actual));
+            UAA_CHECK_EQ(actual[0], 4009u, "cs_multi_set reversed Out[0] mismatch");
         }
 
         // Verify frozen cs_bindless_tex_buf with bindless set 0 and regular set 1.

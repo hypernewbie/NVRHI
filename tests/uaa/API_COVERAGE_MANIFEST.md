@@ -70,9 +70,9 @@ Known gaps include D3D11/D3D12 native extension methods that have no dedicated c
 | `resetTimerQuery(ITimerQuery*)` | `QRY.Timer`, `QRY.Invalid` | GATED_OPTIONAL | Reuse across dispatches |
 | `getGraphicsAPI()` | `DEV.Capabilities`, `NAT.Objects` | MAPPED | Matches active backend |
 | `createFramebuffer(const FramebufferDesc&)` | `GFX.Draw`, `GFX.Framebuffer`, `TEX.DepthStencil`, `GFX.Framebuffer` | MAPPED | Single/MRT colour, depth-stencil, mip/slice attachments |
-| `createGraphicsPipeline(const GraphicsPipelineDesc&, const FramebufferInfo&)` | `GFX.Draw`, `GFX.Blend`, `GFX.Framebuffer`, `STR.Soak` | MAPPED | Primary `FramebufferInfo` overload |
+| `createGraphicsPipeline(const GraphicsPipelineDesc&, const FramebufferInfo&)` | `GFX.Draw`, `GFX.Blend`, `GFX.Framebuffer`, `TBL.GraphicsMultipleLayouts`, `STR.Soak` | MAPPED | Primary `FramebufferInfo` overload |
 | `createGraphicsPipeline(const GraphicsPipelineDesc&, IFramebuffer*)` | `GFX.Framebuffer` | MAPPED | Deprecated `IFramebuffer*` overload compatibility |
-| `createComputePipeline(const ComputePipelineDesc&)` | `CMP.Direct`, `SHD.PipelineFailure`, `STR.Repeat`, `BND.BindingSet` | MAPPED | Compute PSO creation and dispatch |
+| `createComputePipeline(const ComputePipelineDesc&)` | `CMP.Direct`, `SHD.PipelineFailure`, `TBL.MultipleLayouts`, `TBL.MultipleLayoutsExplicit`, `STR.Repeat`, `BND.BindingSet` | MAPPED | Compute PSO creation and dispatch |
 | `createMeshletPipeline(const MeshletPipelineDesc&, const FramebufferInfo&)` | `MSH.Direct`, `MSH.TaskPayload`, `MSH.Indirect` | GATED_OPTIONAL | Gated by `Feature::Meshlets` |
 | `createMeshletPipeline(const MeshletPipelineDesc&, IFramebuffer*)` | `GFX.Framebuffer`, `MSH.Direct` | GATED_OPTIONAL | Deprecated `IFramebuffer*` overload, gated by `Feature::Meshlets` |
 | `createRayTracingPipeline(const rt::PipelineDesc&)` | `RT.Pipeline`, `RT.ShaderTable` | GATED_OPTIONAL | Gated by `Feature::RayTracingPipeline` |

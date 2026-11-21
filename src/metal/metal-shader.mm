@@ -36,10 +36,6 @@ namespace nvrhi::metal
             *pSize = source.size();
     }
 
-    // The bindless descriptor set after the VRHI loader remap, where the runtime
-    // sized arrays live.
-    constexpr uint32_t c_BindlessDescriptorSet = 0;
-
     // Fetches the entry function of a library. The function constants are resolved
     // with an empty list, so every specialisation constant keeps its default. Metal
     // rejects a pipeline that a function with unresolved constants builds.
@@ -81,22 +77,25 @@ namespace nvrhi::metal
         return resolveEntryFunction(context, library, d);
     }
 
-    const Shader::BindlessTranslation* Shader::getTranslationForCapacity(Context& context, uint32_t capacity) const
+    const Shader::BindlessTranslation* Shader::getTranslationForCapacities(Context& context, const std::vector<uint32_t>& capacities) const
     {
         if (!translated.usesBindless)
             return nullptr;
 
-        const auto cached = bindlessTranslations.find(capacity);
-        if (cached != bindlessTranslations.end())
-            return &cached->second;
+        {
+            std::lock_guard< std::mutex > lock(bindlessTranslationsMutex);
+            const auto cached = bindlessTranslations.find(capacities);
+            if (cached != bindlessTranslations.end())
+                return &cached->second;
+        }
 
         BindlessTranslation translation;
         std::string error;
         if (!translateSpirvToMSL(spirv.data(), spirv.size() * sizeof(uint32_t), desc.shaderType, desc.entryName,
-            context.mslVersionMajor, context.mslVersionMinor, c_BindlessDescriptorSet, capacity,
+            context.mslVersionMajor, context.mslVersionMinor, capacities,
             context.device.argumentBuffersSupport == MTLArgumentBuffersTier2, translation.translated, error))
         {
-            context.error("getTranslationForCapacity: failed to translate '" + desc.debugName + "': " + error);
+            context.error("getTranslationForCapacities: failed to translate '" + desc.debugName + "': " + error);
             return nullptr;
         }
 
@@ -104,7 +103,8 @@ namespace nvrhi::metal
         if (!translation.function)
             return nullptr;
 
-        return &bindlessTranslations.emplace(capacity, std::move(translation)).first->second;
+        std::lock_guard< std::mutex > lock(bindlessTranslationsMutex);
+        return &bindlessTranslations.emplace(capacities, std::move(translation)).first->second;
     }
 
     Object Shader::getNativeObject(ObjectType objectType)
@@ -284,12 +284,13 @@ namespace nvrhi::metal
             }
         }
 
-        // The pipeline binds the resources of its shaders; the descriptor set of a resource
-        // is the position of its binding layout in the pipeline.
-        void buildBindingPlan(PipelineBindingPlan& plan, const BindingLayoutVector& layouts, const TranslatedShader& translated, id<MTLFunction> function)
+        // Map translated descriptor sets back to their binding positions in the pipeline.
+        void buildBindingPlan(PipelineBindingPlan& plan, const BindingLayoutVector& layouts, const std::vector<uint32_t>& descriptorSets,
+            const TranslatedShader& translated, id<MTLFunction> function)
         {
-            if (translated.usesArgumentBuffer)
-                plan.argumentBuffers.push_back({ translated.stage, translated.argumentBufferIndex, function });
+            plan.descriptorSets = descriptorSets;
+            for (const auto& argumentBuffer : translated.argumentBuffers)
+                plan.argumentBuffers.push_back({ translated.stage, argumentBuffer.descriptorSet, argumentBuffer.index, function });
 
             for (const auto& resource : translated.resources)
             {
@@ -299,10 +300,12 @@ namespace nvrhi::metal
                     continue;
                 }
 
-                if (resource.descriptorSet >= layouts.size())
+                const auto set = std::find(descriptorSets.begin(), descriptorSets.end(), resource.descriptorSet);
+                if (set == descriptorSets.end())
                     continue;
 
-                const BindingLayout* layout = checked_cast<BindingLayout*>(layouts[resource.descriptorSet].Get());
+                const uint32_t bindingIndex = uint32_t(set - descriptorSets.begin());
+                const BindingLayout* layout = checked_cast<BindingLayout*>(layouts[bindingIndex].Get());
                 if (!layout || layout->isBindless)
                     continue;
 
@@ -313,7 +316,7 @@ namespace nvrhi::metal
 
                     PipelineBindingPlan::Entry entry;
                     entry.stage = translated.stage;
-                    entry.descriptorSet = resource.descriptorSet;
+                    entry.bindingIndex = bindingIndex;
                     entry.slot = item.slot;
                     entry.bound.kind = resource.kind;
                     entry.bound.index = resource.index;
@@ -332,7 +335,7 @@ namespace nvrhi::metal
         TranslatedShader& translated = shader->translated;
         std::string error;
         if (!translateSpirvToMSL(binary, binarySize, d.shaderType, d.entryName, m_Context.mslVersionMajor, m_Context.mslVersionMinor,
-            c_BindlessDescriptorSet, 0, false, translated, error))
+            {}, false, translated, error))
         {
             m_Context.error("createShader: failed to translate '" + d.debugName + "': " + error);
             delete shader;
@@ -507,69 +510,75 @@ namespace nvrhi::metal
         return nullptr;
     }
 
-    // The Metal translation places the runtime sized arrays of one bindless layout
-    // into one descriptor set, and the register spaces of a second layout would
-    // take the same bindings. Reject the pipeline instead of binding the wrong array.
-    static bool validateBindlessLayouts(Context& context, const BindingLayoutVector& layouts)
+    // Match Vulkan's descriptor set assignment: layouts use their order unless
+    // regular layouts specify set indices, in which case bindless layouts follow them.
+    static bool getDescriptorSets(Context& context, const BindingLayoutVector& layouts, std::vector<uint32_t>& sets)
     {
-        size_t bindlessCount = 0;
-        for (const auto& layoutHandle : layouts)
+        bool explicitSets = false;
+        bool foundRegular = false;
+        uint32_t nextBindlessSet = 0;
+        for (const auto& handle : layouts)
         {
-            const BindingLayout* layout = checked_cast<BindingLayout*>(layoutHandle.Get());
-            if (layout && layout->isBindless)
-                ++bindlessCount;
+            const BindingLayout* layout = checked_cast<BindingLayout*>(handle.Get());
+            if (!layout || layout->isBindless)
+                continue;
+            if (!foundRegular)
+                explicitSets = layout->desc.registerSpaceIsDescriptorSet;
+            else if (explicitSets != layout->desc.registerSpaceIsDescriptorSet)
+            {
+                context.error("binding layouts disagree on descriptor set mapping");
+                return false;
+            }
+            foundRegular = true;
+            if (explicitSets)
+                nextBindlessSet = std::max(nextBindlessSet, layout->desc.registerSpace + 1);
         }
 
-        if (bindlessCount > 1)
+        std::set<uint32_t> used;
+        for (uint32_t index = 0; index < layouts.size(); ++index)
         {
-            context.error("the Metal backend supports one bindless layout per pipeline, the register spaces of more would collide");
-            return false;
+            const BindingLayout* layout = checked_cast<BindingLayout*>(layouts[index].Get());
+            uint32_t set = index;
+            if (explicitSets && layout)
+                set = layout->isBindless ? nextBindlessSet++ : layout->desc.registerSpace;
+            if (set >= c_MaxBindingLayouts || !used.insert(set).second)
+            {
+                context.error("binding layouts exceed or overlap the Metal descriptor set limit");
+                return false;
+            }
+            sets.push_back(set);
         }
-
         return true;
     }
 
-    // Resolves the translation of a shader for the bindless layout of the pipeline, or
-    // the eager translation of a shader without runtime sized arrays.
-    static const TranslatedShader* resolveTranslation(Context& context, const Shader* shader, const BindingLayoutVector& layouts)
+    static std::vector<uint32_t> getBindlessCapacities(const BindingLayoutVector& layouts, const std::vector<uint32_t>& sets)
+    {
+        // An unbound table uses capacity one; the shader must not access it.
+        std::vector<uint32_t> capacities(c_MaxBindingLayouts, 1);
+        for (uint32_t index = 0; index < layouts.size(); ++index)
+        {
+            const BindingLayout* layout = checked_cast<BindingLayout*>(layouts[index].Get());
+            if (layout && layout->isBindless)
+                capacities[sets[index]] = layout->bindlessDesc.maxCapacity;
+        }
+        return capacities;
+    }
+
+    static const TranslatedShader* resolveTranslation(Context& context, const Shader* shader, const std::vector<uint32_t>& capacities)
     {
         if (!shader->translated.usesBindless)
             return &shader->translated;
 
-        for (const auto& layoutHandle : layouts)
-        {
-            const BindingLayout* layout = checked_cast<BindingLayout*>(layoutHandle.Get());
-            if (!layout || !layout->isBindless)
-                continue;
-
-            const Shader::BindlessTranslation* translation = shader->getTranslationForCapacity(context, layout->bindlessDesc.maxCapacity);
-            return translation ? &translation->translated : nullptr;
-        }
-
-        // Compile with a capacity of one when no table layout is provided.
-        // The shader must not access an unbound array.
-        const Shader::BindlessTranslation* translation = shader->getTranslationForCapacity(context, 1);
+        const Shader::BindlessTranslation* translation = shader->getTranslationForCapacities(context, capacities);
         return translation ? &translation->translated : nullptr;
     }
 
-    // Resolves the compiled function of a shader the same way the translation is resolved.
-    static id<MTLFunction> resolveFunction(Context& context, const Shader* shader, const BindingLayoutVector& layouts)
+    static id<MTLFunction> resolveFunction(Context& context, const Shader* shader, const std::vector<uint32_t>& capacities)
     {
         if (!shader->translated.usesBindless)
             return shader->function;
 
-        for (const auto& layoutHandle : layouts)
-        {
-            const BindingLayout* layout = checked_cast<BindingLayout*>(layoutHandle.Get());
-            if (!layout || !layout->isBindless)
-                continue;
-
-            const Shader::BindlessTranslation* translation = shader->getTranslationForCapacity(context, layout->bindlessDesc.maxCapacity);
-            return translation ? translation->function : nil;
-        }
-
-        // Match the fallback capacity used by resolveTranslation.
-        const Shader::BindlessTranslation* translation = shader->getTranslationForCapacity(context, 1);
+        const Shader::BindlessTranslation* translation = shader->getTranslationForCapacities(context, capacities);
         return translation ? translation->function : nil;
     }
 
@@ -581,8 +590,10 @@ namespace nvrhi::metal
             return nullptr;
         }
 
-        if (!validateBindlessLayouts(m_Context, desc.bindingLayouts))
+        std::vector<uint32_t> descriptorSets;
+        if (!getDescriptorSets(m_Context, desc.bindingLayouts, descriptorSets))
             return nullptr;
+        const std::vector<uint32_t> capacities = getBindlessCapacities(desc.bindingLayouts, descriptorSets);
 
         const Shader* shader = checked_cast<Shader*>(desc.CS.Get());
         if (!shader)
@@ -591,8 +602,8 @@ namespace nvrhi::metal
             return nullptr;
         }
 
-        const TranslatedShader* translation = resolveTranslation(m_Context, shader, desc.bindingLayouts);
-        id<MTLFunction> function = resolveFunction(m_Context, shader, desc.bindingLayouts);
+        const TranslatedShader* translation = resolveTranslation(m_Context, shader, capacities);
+        id<MTLFunction> function = resolveFunction(m_Context, shader, capacities);
         if (!translation || !function)
             return nullptr;
 
@@ -611,7 +622,7 @@ namespace nvrhi::metal
         result->threadGroupSize[1] = translation->threadGroupSize[1];
         result->threadGroupSize[2] = translation->threadGroupSize[2];
 
-        buildBindingPlan(result->plan, desc.bindingLayouts, *translation, function);
+        buildBindingPlan(result->plan, desc.bindingLayouts, descriptorSets, *translation, function);
         getPushConstantInfo(result->pushConstantBufferIndex, result->pushConstantSize, desc.bindingLayouts, translation->usesPushConstants);
 
         return ComputePipelineHandle::Create(result);
@@ -627,13 +638,15 @@ namespace nvrhi::metal
             return nullptr;
         }
 
-        if (!validateBindlessLayouts(m_Context, desc.bindingLayouts))
+        std::vector<uint32_t> descriptorSets;
+        if (!getDescriptorSets(m_Context, desc.bindingLayouts, descriptorSets))
             return nullptr;
+        const std::vector<uint32_t> capacities = getBindlessCapacities(desc.bindingLayouts, descriptorSets);
 
-        const TranslatedShader* vertexTranslation = resolveTranslation(m_Context, vertexShader, desc.bindingLayouts);
-        const TranslatedShader* pixelTranslation = resolveTranslation(m_Context, pixelShader, desc.bindingLayouts);
-        id<MTLFunction> vertexFunction = resolveFunction(m_Context, vertexShader, desc.bindingLayouts);
-        id<MTLFunction> pixelFunction = resolveFunction(m_Context, pixelShader, desc.bindingLayouts);
+        const TranslatedShader* vertexTranslation = resolveTranslation(m_Context, vertexShader, capacities);
+        const TranslatedShader* pixelTranslation = resolveTranslation(m_Context, pixelShader, capacities);
+        id<MTLFunction> vertexFunction = resolveFunction(m_Context, vertexShader, capacities);
+        id<MTLFunction> pixelFunction = resolveFunction(m_Context, pixelShader, capacities);
         if (!vertexTranslation || !pixelTranslation || !vertexFunction || !pixelFunction)
             return nullptr;
 
@@ -759,8 +772,8 @@ namespace nvrhi::metal
         result->primitiveType = convertPrimitiveType(desc.primType);
         result->depthStencilState = [m_Context.device newDepthStencilStateWithDescriptor:depthStencilDescriptor];
 
-        buildBindingPlan(result->plan, desc.bindingLayouts, *vertexTranslation, vertexFunction);
-        buildBindingPlan(result->plan, desc.bindingLayouts, *pixelTranslation, pixelFunction);
+        buildBindingPlan(result->plan, desc.bindingLayouts, descriptorSets, *vertexTranslation, vertexFunction);
+        buildBindingPlan(result->plan, desc.bindingLayouts, descriptorSets, *pixelTranslation, pixelFunction);
         getPushConstantInfo(result->pushConstantBufferIndex, result->pushConstantSize, desc.bindingLayouts,
             vertexTranslation->usesPushConstants || pixelTranslation->usesPushConstants);
         result->vertexPushConstants = vertexTranslation->usesPushConstants;

@@ -274,7 +274,7 @@ namespace nvrhi::metal
             // A descriptor table binds its slots as array elements of the bindless arrays.
             if (layout->isBindless)
             {
-                bindDescriptorTable(checked_cast<DescriptorTable*>(binding), m_CurrentComputePipeline->plan);
+                bindDescriptorTable(checked_cast<DescriptorTable*>(binding), m_CurrentComputePipeline->plan, i);
                 continue;
             }
 
@@ -287,7 +287,7 @@ namespace nvrhi::metal
                 {
                     if ((entry.stage & stageMask) == ShaderType::None)
                         continue;
-                    if (entry.descriptorSet != i || entry.slot != item.slot)
+                    if (entry.bindingIndex != i || entry.slot != item.slot)
                         continue;
 
                     bindResource(entry.bound, item);
@@ -949,7 +949,7 @@ namespace nvrhi::metal
             // A descriptor table binds its slots as array elements of the bindless arrays.
             if (layout->isBindless)
             {
-                bindDescriptorTable(checked_cast<DescriptorTable*>(binding), m_CurrentGraphicsPipeline->plan);
+                bindDescriptorTable(checked_cast<DescriptorTable*>(binding), m_CurrentGraphicsPipeline->plan, i);
                 continue;
             }
 
@@ -964,7 +964,7 @@ namespace nvrhi::metal
                 {
                     if ((entry.stage & stageMask) == ShaderType::None)
                         continue;
-                    if (entry.descriptorSet != i || entry.slot != item.slot)
+                    if (entry.bindingIndex != i || entry.slot != item.slot)
                         continue;
 
                     bindGraphicsResource(entry.bound, item, entry.stage == ShaderType::Vertex);
@@ -973,12 +973,18 @@ namespace nvrhi::metal
         }
     }
 
-    void CommandList::bindDescriptorTable(DescriptorTable* table, const PipelineBindingPlan& plan)
+    void CommandList::bindDescriptorTable(DescriptorTable* table, const PipelineBindingPlan& plan, uint32_t bindingIndex)
     {
         const BindingLayout* layout = checked_cast<BindingLayout*>(table->layout.Get());
+        if (bindingIndex >= plan.descriptorSets.size())
+            return;
+        const uint32_t descriptorSet = plan.descriptorSets[bindingIndex];
 
         for (const auto& argumentBuffer : plan.argumentBuffers)
-            bindTableArgumentBuffer(table, plan, argumentBuffer);
+        {
+            if (argumentBuffer.descriptorSet == descriptorSet)
+                bindTableArgumentBuffer(table, plan, argumentBuffer);
+        }
 
         for (size_t space = 0; space < table->slots.size(); ++space)
         {
@@ -994,11 +1000,12 @@ namespace nvrhi::metal
 
             for (const ResourceBinding& array : plan.bindlessArrays)
             {
-                if (array.kind != kind || array.writeable != writeable || array.binding != binding)
+                if (array.descriptorSet != descriptorSet || array.kind != kind || array.writeable != writeable || array.binding != binding)
                     continue;
 
                 const auto argumentBuffer = std::find_if(plan.argumentBuffers.begin(), plan.argumentBuffers.end(),
-                    [&array](const PipelineBindingPlan::ArgumentBuffer& entry) { return entry.stage == array.stage; });
+                    [&array](const PipelineBindingPlan::ArgumentBuffer& entry)
+                    { return entry.stage == array.stage && entry.descriptorSet == array.descriptorSet; });
                 if (argumentBuffer == plan.argumentBuffers.end())
                     bindTableArray(table->slots[space], array);
             }
@@ -1029,7 +1036,7 @@ namespace nvrhi::metal
         const BindingLayout* layout = checked_cast<BindingLayout*>(table->layout.Get());
         for (const ResourceBinding& array : plan.bindlessArrays)
         {
-            if (array.stage != argumentBuffer.stage)
+            if (array.stage != argumentBuffer.stage || array.descriptorSet != argumentBuffer.descriptorSet)
                 continue;
 
             const std::vector<BindingSetItem>* slots = nullptr;

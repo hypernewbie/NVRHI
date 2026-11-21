@@ -907,6 +907,98 @@ namespace nvrhi::uaa
         UAA_CHECK_EQ(out[1], 0xCAFE0001u, "Pending dispatch slot 0 buffer mismatch");
     }
 
+    static void runBindlessMultipleLayouts(TestContext& ctx, bool explicitSets)
+    {
+        TestFixture& fix = requireFixture(ctx);
+        requireBindlessSupport(ctx, fix);
+        if (fix.api() == GraphicsAPI::D3D12)
+            ctx.skip("This shader uses Vulkan descriptor set indices");
+        IDevice* dev = fix.device();
+
+        ShaderHandle cs = fix.createShader(explicitSets ? "cs_bindless_two_sets_explicit" : "cs_bindless_two_sets", ShaderType::Compute);
+        BindlessLayoutDesc firstDesc;
+        firstDesc.setVisibility(ShaderType::Compute).setLayoutType(BindlessLayoutDesc::LayoutType::Immutable)
+            .setMaxCapacity(4).setUpdateAfterBind(false).addRegisterSpace(BindingLayoutItem::Texture_SRV(0));
+        BindlessLayoutDesc secondDesc = firstDesc;
+        secondDesc.setMaxCapacity(8);
+        BindingLayoutHandle firstLayout = dev->createBindlessLayout(firstDesc);
+        BindingLayoutHandle secondLayout = dev->createBindlessLayout(secondDesc);
+        firstDesc.setMaxCapacity(8);
+        secondDesc.setMaxCapacity(16);
+        BindingLayoutHandle firstLargeLayout = dev->createBindlessLayout(firstDesc);
+        BindingLayoutHandle secondLargeLayout = dev->createBindlessLayout(secondDesc);
+        BindingLayoutHandle regularLayout = dev->createBindingLayout(
+            fix.makeBindingLayoutDesc(ShaderType::Compute, 0, explicitSets)
+                .addItem(BindingLayoutItem::Sampler(0))
+                .addItem(BindingLayoutItem::StructuredBuffer_UAV(1)));
+        UAA_CHECK(cs && firstLayout && secondLayout && firstLargeLayout && secondLargeLayout && regularLayout, "Shaders or layouts are null");
+
+        DescriptorTableHandle first = dev->createDescriptorTable(firstLayout);
+        DescriptorTableHandle second = dev->createDescriptorTable(secondLayout);
+        DescriptorTableHandle replacement = dev->createDescriptorTable(secondLayout);
+        DescriptorTableHandle firstLarge = dev->createDescriptorTable(firstLargeLayout);
+        DescriptorTableHandle secondLarge = dev->createDescriptorTable(secondLargeLayout);
+        ComputePipelineHandle pso = dev->createComputePipeline(ComputePipelineDesc().setComputeShader(cs)
+            .addBindingLayout(firstLayout).addBindingLayout(regularLayout).addBindingLayout(secondLayout));
+        ComputePipelineHandle largePso = dev->createComputePipeline(ComputePipelineDesc().setComputeShader(cs)
+            .addBindingLayout(firstLargeLayout).addBindingLayout(regularLayout).addBindingLayout(secondLargeLayout));
+        UAA_CHECK(first && second && replacement && firstLarge && secondLarge && pso && largePso, "Tables or pipelines are null");
+
+        TextureHandle red = createSolidRgba8Texture(fix, 255, 0, 0, 255, "tbl_two_first");
+        TextureHandle green = createSolidRgba8Texture(fix, 0, 255, 0, 255, "tbl_two_second");
+        TextureHandle blue = createSolidRgba8Texture(fix, 0, 0, 255, 255, "tbl_two_replacement");
+        SamplerHandle sampler = dev->createSampler(SamplerDesc().setAllFilters(false).setAllAddressModes(SamplerAddressMode::Clamp));
+        BufferHandle outFirst = createStructuredBuffer(fix, 16, "tbl_two_out_first", true);
+        BufferHandle outSecond = createStructuredBuffer(fix, 16, "tbl_two_out_second", true);
+        BufferHandle outLarge = createStructuredBuffer(fix, 16, "tbl_two_out_large", true);
+        UAA_CHECK(red && green && blue && sampler && outFirst && outSecond && outLarge, "Two-table resources are null");
+        UAA_CHECK(dev->writeDescriptorTable(first, BindingSetItem::Texture_SRV(1, red)), "First table write failed");
+        UAA_CHECK(dev->writeDescriptorTable(second, BindingSetItem::Texture_SRV(6, green)), "Second table write failed");
+        UAA_CHECK(dev->writeDescriptorTable(replacement, BindingSetItem::Texture_SRV(6, blue)), "Replacement table write failed");
+        UAA_CHECK(dev->writeDescriptorTable(firstLarge, BindingSetItem::Texture_SRV(1, green)), "Large first table write failed");
+        UAA_CHECK(dev->writeDescriptorTable(secondLarge, BindingSetItem::Texture_SRV(6, red)), "Large second table write failed");
+
+        BindingSetHandle regularFirst = dev->createBindingSet(BindingSetDesc()
+            .addItem(BindingSetItem::Sampler(0, sampler)).addItem(BindingSetItem::StructuredBuffer_UAV(1, outFirst)), regularLayout);
+        BindingSetHandle regularSecond = dev->createBindingSet(BindingSetDesc()
+            .addItem(BindingSetItem::Sampler(0, sampler)).addItem(BindingSetItem::StructuredBuffer_UAV(1, outSecond)), regularLayout);
+        BindingSetHandle regularLarge = dev->createBindingSet(BindingSetDesc()
+            .addItem(BindingSetItem::Sampler(0, sampler)).addItem(BindingSetItem::StructuredBuffer_UAV(1, outLarge)), regularLayout);
+        UAA_CHECK(regularFirst && regularSecond && regularLarge, "Regular binding sets are null");
+
+        CommandListHandle cmd = dev->createCommandList();
+        cmd->open();
+        cmd->setComputeState(ComputeState().setPipeline(pso).addBindingSet(first).addBindingSet(regularFirst).addBindingSet(second));
+        cmd->dispatch(1);
+        cmd->setComputeState(ComputeState().setPipeline(largePso).addBindingSet(firstLarge).addBindingSet(regularLarge).addBindingSet(secondLarge));
+        cmd->dispatch(1);
+        cmd->setComputeState(ComputeState().setPipeline(pso).addBindingSet(first).addBindingSet(regularSecond).addBindingSet(replacement));
+        cmd->dispatch(1);
+        cmd->close();
+        fix.submitAndWait(cmd);
+
+        std::array<uint32_t, 2> out = {};
+        fix.readbackBuffer(outFirst, out.data(), sizeof(out));
+        UAA_CHECK_EQ(out[0], packRgba8(255, 0, 0, 255), "First table result mismatch");
+        UAA_CHECK_EQ(out[1], packRgba8(0, 255, 0, 255), "Second table result mismatch");
+        fix.readbackBuffer(outSecond, out.data(), sizeof(out));
+        UAA_CHECK_EQ(out[0], packRgba8(255, 0, 0, 255), "First table changed after rebind");
+        UAA_CHECK_EQ(out[1], packRgba8(0, 0, 255, 255), "Replacement table result mismatch");
+        fix.readbackBuffer(outLarge, out.data(), sizeof(out));
+        UAA_CHECK_EQ(out[0], packRgba8(0, 255, 0, 255), "Large first table result mismatch");
+        UAA_CHECK_EQ(out[1], packRgba8(255, 0, 0, 255), "Large second table result mismatch");
+    }
+
+    static void testBindlessMultipleLayouts(TestContext& ctx)
+    {
+        runBindlessMultipleLayouts(ctx, false);
+    }
+
+    static void testBindlessMultipleLayoutsExplicit(TestContext& ctx)
+    {
+        runBindlessMultipleLayouts(ctx, true);
+    }
+
     static void testBindlessTypedUav(TestContext& ctx)
     {
         TestFixture& fix = requireFixture(ctx);
@@ -1502,16 +1594,18 @@ namespace nvrhi::uaa
         // A graphics pipeline whose vertex and fragment stages each read their own
         // texture array of the bindless set. The stages translate separately, so the
         // arrays take different Metal indices and each stage needs its own binding.
-        static void testBindlessGraphicsStages(TestContext& ctx)
+        static void runBindlessGraphicsStages(TestContext& ctx, bool separateSets)
         {
             TestFixture& fix = requireFixture(ctx);
             requireBindlessSupport(ctx, fix);
+            if (separateSets && fix.api() == GraphicsAPI::D3D12)
+                ctx.skip("This shader uses Vulkan descriptor set indices");
             IDevice* dev = fix.device();
 
             const uint32_t capacity = 4u;
 
             ShaderHandle vs = fix.createShader("vs_bindless_stage", ShaderType::Vertex);
-            ShaderHandle ps = fix.createShader("ps_bindless_stage", ShaderType::Pixel);
+            ShaderHandle ps = fix.createShader(separateSets ? "ps_bindless_separate_sets" : "ps_bindless_stage", ShaderType::Pixel);
             UAA_CHECK(vs != nullptr && ps != nullptr, "shader creation failed");
 
             BindlessLayoutDesc bindlessDesc;
@@ -1519,10 +1613,17 @@ namespace nvrhi::uaa
                 .setLayoutType(BindlessLayoutDesc::LayoutType::Immutable)
                 .setUpdateAfterBind(false)
                 .setMaxCapacity(capacity)
-                .addRegisterSpace(BindingLayoutItem::Texture_SRV(0))
-                .addRegisterSpace(BindingLayoutItem::Texture_SRV(1));
+                .addRegisterSpace(BindingLayoutItem::Texture_SRV(0));
+            if (!separateSets)
+                bindlessDesc.addRegisterSpace(BindingLayoutItem::Texture_SRV(1));
             BindingLayoutHandle bindlessLayout = dev->createBindlessLayout(bindlessDesc);
-            UAA_CHECK(bindlessLayout != nullptr, "createBindlessLayout returned null");
+            BindingLayoutHandle pixelLayout;
+            if (separateSets)
+            {
+                bindlessDesc.setVisibility(ShaderType::Pixel).setMaxCapacity(8);
+                pixelLayout = dev->createBindlessLayout(bindlessDesc);
+            }
+            UAA_CHECK(bindlessLayout && (!separateSets || pixelLayout), "createBindlessLayout returned null");
 
             BindingLayoutHandle samplerLayout = dev->createBindingLayout(
                 fix.makeBindingLayoutDesc(ShaderType::AllGraphics, regularSpaceForBindless(fix), false)
@@ -1530,7 +1631,8 @@ namespace nvrhi::uaa
             UAA_CHECK(samplerLayout != nullptr, "sampler layout creation failed");
 
             DescriptorTableHandle table = dev->createDescriptorTable(bindlessLayout);
-            UAA_CHECK(table != nullptr, "createDescriptorTable returned null");
+            DescriptorTableHandle pixelTable = separateSets ? dev->createDescriptorTable(pixelLayout) : table;
+            UAA_CHECK(table && pixelTable, "createDescriptorTable returned null");
 
             TextureDesc rtDesc;
             rtDesc.setWidth(8)
@@ -1552,6 +1654,8 @@ namespace nvrhi::uaa
                 .setRenderState(RenderState()
                     .setRasterState(RasterState().setCullNone())
                     .setDepthStencilState(DepthStencilState().setDepthTestEnable(false).setDepthWriteEnable(false).setStencilEnable(false)));
+            if (separateSets)
+                psoDesc.addBindingLayout(pixelLayout);
             GraphicsPipelineHandle pso = dev->createGraphicsPipeline(psoDesc, fb->getFramebufferInfo());
             UAA_CHECK(pso != nullptr, "createGraphicsPipeline returned null");
 
@@ -1559,11 +1663,10 @@ namespace nvrhi::uaa
             TextureHandle pixTex = createSolidRgba8Texture(fix, 0, 255, 0, 255, "tbl_stage_pix");
             UAA_CHECK(vertTex && pixTex, "texture creation failed");
 
-            // One write reaches both register spaces of the type, like the Vulkan
-            // backend. The vertex stage reads slot 0 and the fragment stage slot 1,
-            // so each stage picks up its own texture and the other slots stay holes.
+            // The vertex stage reads slot 0 and the fragment stage reads slot 1.
+            // In the shared-table case, each write reaches both register spaces.
             UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(0, vertTex)), "slot 0 write failed");
-            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(1, pixTex)), "slot 1 write failed");
+            UAA_CHECK(dev->writeDescriptorTable(pixelTable, BindingSetItem::Texture_SRV(1, pixTex)), "slot 1 write failed");
 
             SamplerHandle sampler = dev->createSampler(
                 SamplerDesc().setAllFilters(false).setAllAddressModes(SamplerAddressMode::Clamp));
@@ -1576,13 +1679,12 @@ namespace nvrhi::uaa
             UAA_CHECK(cmd != nullptr, "createCommandList returned null");
             cmd->open();
             cmd->clearTextureFloat(rt, AllSubresources, Color(0.f, 0.f, 0.f, 1.f));
-            cmd->setGraphicsState(
-                GraphicsState()
-                    .setPipeline(pso)
-                    .setFramebuffer(fb)
-                    .addBindingSet(table)
-                    .addBindingSet(samplerSet)
-                    .setViewport(ViewportState().addViewportAndScissorRect(fb->getFramebufferInfo().getViewport())));
+            GraphicsState state;
+            state.setPipeline(pso).setFramebuffer(fb).addBindingSet(table).addBindingSet(samplerSet)
+                .setViewport(ViewportState().addViewportAndScissorRect(fb->getFramebufferInfo().getViewport()));
+            if (separateSets)
+                state.addBindingSet(pixelTable);
+            cmd->setGraphicsState(state);
             cmd->draw(DrawArguments().setVertexCount(3));
             cmd->close();
             fix.submitAndWait(cmd);
@@ -1600,16 +1702,24 @@ namespace nvrhi::uaa
             }
         }
 
-        // The Metal translation puts the arrays of every bindless layout into one
-        // descriptor set, so a second bindless layout must fail the pipeline instead
-        // of binding the wrong arrays.
-        static void testBindlessSecondLayoutRejected(TestContext& ctx)
+        static void testBindlessGraphicsStages(TestContext& ctx)
+        {
+            runBindlessGraphicsStages(ctx, false);
+        }
+
+        static void testBindlessGraphicsMultipleLayouts(TestContext& ctx)
+        {
+            runBindlessGraphicsStages(ctx, true);
+        }
+
+        // Descriptor set indices outside the backend limit must be rejected.
+        static void testBindlessLayoutLimit(TestContext& ctx)
         {
             TestFixture& fix = requireFixture(ctx);
             requireBindlessSupport(ctx, fix);
             if (fix.api() != GraphicsAPI::METAL)
             {
-                ctx.skip("The single-bindless-layout limit is a Metal backend contract");
+                ctx.skip("The Metal descriptor set limit is backend-specific");
             }
 
             IDevice* dev = fix.device();
@@ -1635,14 +1745,18 @@ namespace nvrhi::uaa
             BindingLayoutHandle secondLayout = dev->createBindlessLayout(second);
             UAA_CHECK(secondLayout != nullptr, "second bindless layout returned null");
 
-            ComputePipelineHandle pso = nullptr;
+            BindingLayoutHandle regular = dev->createBindingLayout(BindingLayoutDesc()
+                .setVisibility(ShaderType::Compute).setRegisterSpaceAndDescriptorSet(c_MaxBindingLayouts - 1)
+                .addItem(BindingLayoutItem::Sampler(0)));
+            UAA_CHECK(regular != nullptr, "regular layout returned null");
             {
                 ExpectErrorsGuard guard(fix);
-                pso = dev->createComputePipeline(
+                ComputePipelineHandle pso = dev->createComputePipeline(
                     ComputePipelineDesc().setComputeShader(cs)
                         .addBindingLayout(firstLayout)
-                        .addBindingLayout(secondLayout));
-                UAA_CHECK(pso == nullptr, "a pipeline with two bindless layouts must be rejected on Metal");
+                        .addBindingLayout(secondLayout)
+                        .addBindingLayout(regular));
+                UAA_CHECK(pso == nullptr, "descriptor sets beyond the backend limit must be rejected");
                 UAA_CHECK(guard.errorCount() > 0u, "the rejection must report an error");
             }
 
@@ -1757,6 +1871,8 @@ namespace nvrhi::uaa
         UAA_REGISTER_TEST("TBL.UpdateAfterBind", "core", testBindlessUpdateAfterBind);
         UAA_REGISTER_TEST("TBL.PendingLifetime", "core", testBindlessPendingLifetime);
         UAA_REGISTER_TEST("TBL.LargeOrdinary", "core", testBindlessLargeOrdinary);
+        UAA_REGISTER_TEST("TBL.MultipleLayouts", "core", testBindlessMultipleLayouts);
+        UAA_REGISTER_TEST("TBL.MultipleLayoutsExplicit", "core", testBindlessMultipleLayoutsExplicit);
         UAA_REGISTER_TEST("TBL.Samplers", "core", testBindlessSamplers);
         UAA_REGISTER_TEST("TBL.TypedUav", "core", testBindlessTypedUav);
         UAA_REGISTER_TEST("TBL.Limits", "core", testBindlessLimits);
@@ -1767,5 +1883,6 @@ namespace nvrhi::uaa
         UAA_REGISTER_TEST("TBL.PreSubmitUpdate", "core", testBindlessPreSubmitUpdate);
         UAA_REGISTER_TEST("TBL.MetalUabRejected", "core,metal", testMetalUabRejected);
         UAA_REGISTER_TEST("TBL.GraphicsStages", "core", testBindlessGraphicsStages);
-        UAA_REGISTER_TEST("TBL.SecondLayoutRejected", "core", testBindlessSecondLayoutRejected);
+        UAA_REGISTER_TEST("TBL.GraphicsMultipleLayouts", "core", testBindlessGraphicsMultipleLayouts);
+        UAA_REGISTER_TEST("TBL.LayoutLimit", "core", testBindlessLayoutLimit);
     } // namespace nvrhi::uaa

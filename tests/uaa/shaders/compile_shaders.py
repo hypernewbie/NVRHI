@@ -132,11 +132,14 @@ def main() -> int:
         ("cs_bindless_tex_buf", "cs_bindless_tex_buf.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
         ("cs_bindless_sampler", "cs_bindless_sampler.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
         ("cs_bindless_typed_uav", "cs_bindless_typed_uav.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
+        ("cs_bindless_two_sets", "cs_bindless_two_sets.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
+        ("cs_bindless_two_sets_explicit", "cs_bindless_two_sets_explicit.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
         ("cs_bindless_two_tex_kinds", "cs_bindless_two_tex_kinds.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
         ("cs_bindless_cube_sparse", "cs_bindless_cube_sparse.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
         ("cs_bindless_uint_sparse", "cs_bindless_uint_sparse.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
         ("vs_bindless_stage", "vs_bindless_stage.hlsl", "main", "vs_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
         ("ps_bindless_stage", "ps_bindless_stage.hlsl", "main", "ps_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
+        ("ps_bindless_separate_sets", "ps_bindless_separate_sets.hlsl", "main", "ps_6_0", ["-fspv-target-env=vulkan1.2"], "bindless_msl", "vulkan1.2"),
         ("cs_wave_lane", "cs_wave_lane.hlsl", "main", "cs_6_0", ["-fspv-target-env=vulkan1.1"], True, "vulkan1.1"),
         ("vs_fullscreen_tri", "vs_fullscreen_tri.hlsl", "main", "vs_6_0", ["-fspv-target-env=vulkan1.1"], True, "vulkan1.1"),
         ("ps_solid_color", "ps_solid_color.hlsl", "main", "ps_6_0", ["-fspv-target-env=vulkan1.1"], True, "vulkan1.1"),
@@ -163,11 +166,14 @@ def main() -> int:
         "cs_bindless_tex_buf",
         "cs_bindless_sampler",
         "cs_bindless_typed_uav",
+        "cs_bindless_two_sets",
+        "cs_bindless_two_sets_explicit",
         "cs_bindless_two_tex_kinds",
         "cs_bindless_cube_sparse",
         "cs_bindless_uint_sparse",
         "vs_bindless_stage",
         "ps_bindless_stage",
+        "ps_bindless_separate_sets",
         "cs_metal_custom_entry",
     }
 
@@ -202,6 +208,10 @@ def main() -> int:
             msl_cmd = [spirv_cross, "--msl", "--msl-version", "30000", "--msl-texture-buffer-native"]
             if test_msl == "bindless_msl":
                 msl_cmd += ["--msl-argument-buffers", "--msl-argument-buffer-tier", "1", "--msl-device-argument-buffer", "0"]
+                if name in {"cs_bindless_two_sets", "cs_bindless_two_sets_explicit", "ps_bindless_separate_sets"}:
+                    msl_cmd += ["--msl-device-argument-buffer", "2"]
+                if name == "cs_bindless_two_sets_explicit":
+                    msl_cmd += ["--msl-device-argument-buffer", "1"]
             if entry:
                 msl_cmd += ["--entry", entry]
             msl_cmd.append(str(spv_path))
@@ -242,7 +252,7 @@ def main() -> int:
 
         if fxc and target in ("cs_6_0", "vs_6_0", "ps_6_0") and name not in {
             "cs_spec_const", "cs_multi_set", "cs_bindless_tex_buf", "cs_wave_lane", "cs_metal_custom_entry",
-            "cs_bindless_sampler", "cs_bindless_typed_uav", "cs_bindless_two_tex_kinds", "cs_bindless_cube_sparse", "cs_bindless_uint_sparse", "vs_bindless_stage", "ps_bindless_stage",
+            "cs_bindless_sampler", "cs_bindless_typed_uav", "cs_bindless_two_sets", "cs_bindless_two_sets_explicit", "cs_bindless_two_tex_kinds", "cs_bindless_cube_sparse", "cs_bindless_uint_sparse", "vs_bindless_stage", "ps_bindless_stage", "ps_bindless_separate_sets",
         }:
             dxbc_path = dxbc_dir / f"{name}.dxbc"
             dxbc_target = target[:2] + "_5_0"

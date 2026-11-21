@@ -76,14 +76,19 @@ namespace nvrhi::metal
         // A runtime sized descriptor array cannot be sized until the descriptor table
         // capacity is known, so such a shader keeps its function deferred to the pipeline.
         bool usesBindless = false;
-        bool usesArgumentBuffer = false;
-        uint32_t argumentBufferIndex = 0;
+
+        struct ArgumentBuffer
+        {
+            uint32_t descriptorSet = 0;
+            uint32_t index = 0;
+        };
+        std::vector<ArgumentBuffer> argumentBuffers;
     };
 
     // Translates a SPIR-V module to MSL. The resources are given explicit Metal indices
     // so that the command list can bind them without parsing the generated source.
-    // The runtime sized arrays of the bindless descriptor set are sized to the table
-    // capacity; a capacity of zero only reports whether the module uses them.
+    // Runtime sized arrays use the capacity of their descriptor set. An empty
+    // capacity vector only reports whether the module uses them.
     bool translateSpirvToMSL(
         const void* spirv,
         size_t size,
@@ -91,9 +96,8 @@ namespace nvrhi::metal
         const std::string& entryName,
         uint32_t mslVersionMajor,
         uint32_t mslVersionMinor,
-        uint32_t bindlessSet,
-        uint32_t bindlessCapacity,
-        bool useArgumentBuffer,
+        const std::vector<uint32_t>& bindlessCapacities,
+        bool useArgumentBuffers,
         TranslatedShader& out,
         std::string& error);
 }

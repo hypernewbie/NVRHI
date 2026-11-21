@@ -215,15 +215,16 @@ namespace nvrhi::metal
             id<MTLFunction> function = nil;
         };
         std::vector<uint32_t> spirv;
-        mutable std::map<uint32_t, BindlessTranslation> bindlessTranslations;
+        mutable std::mutex bindlessTranslationsMutex;
+        mutable std::map<std::vector<uint32_t>, BindlessTranslation> bindlessTranslations;
 
         const ShaderDesc& getDesc() const override { return desc; }
         void getBytecode(const void** ppBytecode, size_t* pSize) const override;
         Object getNativeObject(ObjectType objectType) override;
 
-        // Compile and cache bindless shaders by table capacity.
+        // Compile and cache bindless shaders by descriptor set capacity.
         // Returns nullptr for shaders without runtime-sized arrays.
-        const BindlessTranslation* getTranslationForCapacity(Context& context, uint32_t capacity) const;
+        const BindlessTranslation* getTranslationForCapacities(Context& context, const std::vector<uint32_t>& capacities) const;
     };
 
     class InputLayout : public RefCounter<IInputLayout>
@@ -292,23 +293,25 @@ namespace nvrhi::metal
         struct Entry
         {
             ShaderType stage = ShaderType::None;
-            uint32_t descriptorSet = 0;
+            uint32_t bindingIndex = 0;
             uint32_t slot = 0;
             BoundResource bound;
         };
 
         std::vector<Entry> entries;
+        std::vector<uint32_t> descriptorSets;
 
         struct ArgumentBuffer
         {
             ShaderType stage = ShaderType::None;
+            uint32_t descriptorSet = 0;
             uint32_t index = 0;
             id<MTLFunction> function = nil;
         };
         std::vector<ArgumentBuffer> argumentBuffers;
 
-        // The runtime sized arrays of the bindless descriptor set, one per resource
-        // direction, sized to the table capacity by the translation.
+        // The runtime sized arrays of the bindless descriptor sets, sized to the
+        // table capacities by the translation.
         std::vector<ResourceBinding> bindlessArrays;
 
     };
@@ -480,7 +483,7 @@ namespace nvrhi::metal
         void bindGraphicsResources(const GraphicsState& state);
         void bindResource(const BoundResource& bound, const nvrhi::BindingSetItem& item);
         void bindGraphicsResource(const BoundResource& bound, const nvrhi::BindingSetItem& item, bool vertexStage);
-        void bindDescriptorTable(DescriptorTable* table, const PipelineBindingPlan& plan);
+        void bindDescriptorTable(DescriptorTable* table, const PipelineBindingPlan& plan, uint32_t bindingIndex);
         void bindTableArgumentBuffer(DescriptorTable* table, const PipelineBindingPlan& plan, const PipelineBindingPlan::ArgumentBuffer& argumentBuffer);
         void bindTableArray(const std::vector<nvrhi::BindingSetItem>& slots, const ResourceBinding& array);
         void bindNullResource(ResourceKind kind, uint32_t index, bool bufferArray, Format format, TextureDimension dimension,
