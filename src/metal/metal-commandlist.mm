@@ -1232,6 +1232,17 @@ namespace nvrhi::metal
         if (!countBuffer || !countBuffer->buffer || !m_IndirectBuffer || !m_IndirectBuffer->buffer)
             return nil;
 
+        const uint64_t argsSize = uint64_t(maxDrawCount) * 20;
+        if ((paramOffsetBytes & 3) || (countOffsetBytes & 3) || argsSize > UINT32_MAX ||
+            paramOffsetBytes > m_IndirectBuffer->desc.byteSize ||
+            argsSize > m_IndirectBuffer->desc.byteSize - paramOffsetBytes ||
+            countOffsetBytes > countBuffer->desc.byteSize ||
+            sizeof(uint32_t) > countBuffer->desc.byteSize - countOffsetBytes)
+        {
+            m_Device->getContext().error("drawIndexedIndirectCount: invalid argument or count buffer range");
+            return nil;
+        }
+
         id<MTLComputePipelineState> pipeline = m_Device->getIndirectCountPipeline();
         if (!pipeline)
             return nil;
@@ -1239,7 +1250,7 @@ namespace nvrhi::metal
         // The arguments of the counted draws are expanded into a scratch buffer, and
         // the commands that the count excludes are zeroed. Every counted draw gets its
         // own buffers, so a draw that is still running is not overwritten.
-        id<MTLBuffer> argsBuffer = [m_Device->getContext().device newBufferWithLength:maxDrawCount * 20
+        id<MTLBuffer> argsBuffer = [m_Device->getContext().device newBufferWithLength:argsSize
             options:MTLResourceStorageModePrivate];
         id<MTLBuffer> paramsBuffer = [m_Device->getContext().device newBufferWithLength:16
             options:MTLResourceStorageModeShared];

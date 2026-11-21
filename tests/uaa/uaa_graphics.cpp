@@ -1126,6 +1126,15 @@ namespace nvrhi::uaa
                         .setIndirectParams(indBuf)
                         .setIndirectCountBuffer(countBuf)
                         .setViewport(nvrhi::ViewportState().addViewportAndScissorRect(fb->getFramebufferInfo().getViewport())));
+                if (fix.api() == nvrhi::GraphicsAPI::METAL && !fix.isValidationActive() && countOffset == 0)
+                {
+                    ExpectErrorsGuard guard(fix);
+                    cmd->drawIndexedIndirectCount(2u, 0u, 1u);
+                    cmd->drawIndexedIndirectCount(48u, 0u, 1u);
+                    cmd->drawIndexedIndirectCount(0u, 64u, 1u);
+                    cmd->drawIndexedIndirectCount(0u, 0u, UINT32_MAX);
+                    UAA_CHECK(guard.errorCount() == 4, "Invalid indirect ranges must be rejected");
+                }
                 cmd->drawIndexedIndirectCount(0u, countOffset, 2u);
             };
 

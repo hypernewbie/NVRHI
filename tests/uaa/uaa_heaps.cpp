@@ -536,6 +536,23 @@ namespace nvrhi::uaa
                     UAA_CHECK(!dev->bindTextureMemory(vtex, heap, safeOverflowOffset),
                         "bindTextureMemory must reject overflowing offset");
 
+                    // Exercise arithmetic wraparound directly on Metal, without relying on validation.
+                    if (fix.api() == GraphicsAPI::METAL && !fix.isValidationActive())
+                    {
+                        const uint64_t nearMaxTex = UINT64_MAX - UINT64_MAX % req.alignment;
+                        UAA_CHECK(!dev->bindTextureMemory(vtex, heap, nearMaxTex),
+                            "bindTextureMemory must reject an offset near UINT64_MAX");
+
+                        BufferHandle vbuf = dev->createBuffer(BufferDesc()
+                            .setByteSize(65536).setIsVirtual(true).setDebugName("heap_reject_wrap_buf"));
+                        UAA_CHECK(vbuf != nullptr, "createBuffer virtual returned null");
+                        const MemoryRequirements bufReq = dev->getBufferMemoryRequirements(vbuf);
+                        UAA_CHECK(bufReq.alignment > 0, "invalid virtual buffer alignment");
+                        const uint64_t nearMaxBuf = UINT64_MAX - UINT64_MAX % bufReq.alignment;
+                        UAA_CHECK(!dev->bindBufferMemory(vbuf, heap, nearMaxBuf),
+                            "bindBufferMemory must reject an offset near UINT64_MAX");
+                    }
+
                     UAA_CHECK(guard.errorCount() > 0u,
                         "Expected validation/backend errors on rejected bind calls");
                 }

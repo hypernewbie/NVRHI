@@ -376,7 +376,8 @@ namespace nvrhi::metal
         // the end of the resource are checked against the heap explicitly. The
         // requested capacity is used, because Metal rounds the heap size up.
         const MTLSizeAndAlign sizeAndAlign = [m_Context.device heapTextureSizeAndAlignWithDescriptor:texture->descriptor];
-        if ((offset % sizeAndAlign.align) != 0 || offset + sizeAndAlign.size > heap->desc.capacity)
+        if (!sizeAndAlign.align || (offset % sizeAndAlign.align) != 0 || offset > heap->desc.capacity ||
+            sizeAndAlign.size > heap->desc.capacity - offset)
         {
             m_Context.error("bindTextureMemory: the offset does not place the texture inside the heap");
             return false;
@@ -592,7 +593,8 @@ namespace nvrhi::metal
         // the end of the resource are checked against the heap explicitly. The
         // requested capacity is used, because Metal rounds the heap size up.
         const MTLSizeAndAlign sizeAndAlign = [m_Context.device heapBufferSizeAndAlignWithLength:buffer->desc.byteSize options:options];
-        if ((offset % sizeAndAlign.align) != 0 || offset + sizeAndAlign.size > heap->desc.capacity)
+        if (!sizeAndAlign.align || (offset % sizeAndAlign.align) != 0 || offset > heap->desc.capacity ||
+            sizeAndAlign.size > heap->desc.capacity - offset)
         {
             m_Context.error("bindBufferMemory: the offset does not place the buffer inside the heap");
             return false;
