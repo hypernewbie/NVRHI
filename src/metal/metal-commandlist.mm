@@ -290,7 +290,9 @@ namespace nvrhi::metal
                     if (entry.bindingIndex != i || entry.slot != item.slot)
                         continue;
 
-                    bindResource(entry.bound, item);
+                    BoundResource bound = entry.bound;
+                    bound.index += item.arrayElement;
+                    bindResource(bound, item);
                 }
             }
         }
@@ -967,7 +969,9 @@ namespace nvrhi::metal
                     if (entry.bindingIndex != i || entry.slot != item.slot)
                         continue;
 
-                    bindGraphicsResource(entry.bound, item, entry.stage == ShaderType::Vertex);
+                    BoundResource bound = entry.bound;
+                    bound.index += item.arrayElement;
+                    bindGraphicsResource(bound, item, entry.stage == ShaderType::Vertex);
                 }
             }
         }

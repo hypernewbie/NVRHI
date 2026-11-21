@@ -207,8 +207,7 @@ namespace nvrhi::metal
         // A specialised shader holds the base shader, which owns the library.
         ShaderHandle baseShader;
 
-        // Bindless shaders are compiled per table capacity because their SPIR-V
-        // contains runtime-sized arrays.
+        // Shader variants use the bindless layout capacities of their pipeline.
         struct BindlessTranslation
         {
             TranslatedShader translated;
@@ -222,8 +221,7 @@ namespace nvrhi::metal
         void getBytecode(const void** ppBytecode, size_t* pSize) const override;
         Object getNativeObject(ObjectType objectType) override;
 
-        // Compile and cache bindless shaders by descriptor set capacity.
-        // Returns nullptr for shaders without runtime-sized arrays.
+        // Compile and cache shaders by bindless descriptor set capacity.
         const BindlessTranslation* getTranslationForCapacities(Context& context, const std::vector<uint32_t>& capacities) const;
     };
 
@@ -310,8 +308,7 @@ namespace nvrhi::metal
         };
         std::vector<ArgumentBuffer> argumentBuffers;
 
-        // The runtime sized arrays of the bindless descriptor sets, sized to the
-        // table capacities by the translation.
+        // The shader resources backed by bindless descriptor tables.
         std::vector<ResourceBinding> bindlessArrays;
 
     };

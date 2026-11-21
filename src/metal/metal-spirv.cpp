@@ -39,7 +39,7 @@ namespace nvrhi::metal
             uint32_t binding = 0;
             ResourceKind kind = ResourceKind::Buffer;
             bool writeable = false;
-            bool runtimeArray = false;
+            bool bindless = false;
             uint32_t index = 0;
             uint32_t count = 1;
             bool bufferArray = false;
@@ -231,47 +231,63 @@ namespace nvrhi::metal
                 return false;
             }
 
-            // Runtime-sized arrays require the table capacity at pipeline creation.
-            bool usesBindless = false;
+            // Runtime arrays need a table capacity. Fixed arrays and individual
+            // resources also belong to the table when their layout is bindless.
             for (auto& entry : entries)
             {
-                if (entry.count != 0)
-                    continue;
-
                 if (bindlessCapacities.empty())
                 {
-                    usesBindless = true;
+                    if (entry.count == 0)
+                        out.usesBindless = true;
                     continue;
                 }
 
                 if (entry.descriptorSet >= bindlessCapacities.size())
                 {
-                    error = "a runtime sized array uses an unsupported descriptor set";
-                    return false;
+                    if (entry.count == 0)
+                    {
+                        error = "a runtime sized array uses an unsupported descriptor set";
+                        return false;
+                    }
+                    continue;
                 }
 
-                entry.runtimeArray = true;
-                entry.count = bindlessCapacities[entry.descriptorSet];
+                const uint32_t capacity = bindlessCapacities[entry.descriptorSet];
+                if (capacity != 0)
+                {
+                    entry.bindless = true;
+                    if (entry.count == 0)
+                        entry.count = capacity;
+                    else if (entry.count > capacity)
+                    {
+                        error = "a shader array exceeds its bindless layout capacity";
+                        return false;
+                    }
+                }
+                else if (entry.count == 0)
+                {
+                    // An unbound runtime array must not be accessed.
+                    entry.bindless = true;
+                    entry.count = 1;
+                }
             }
 
-            if (usesBindless)
-            {
-                out.usesBindless = true;
+            if (out.usesBindless)
                 return true;
-            }
 
-            // A set with fixed-size resources stays on the classic binding path.
+            // A set with ordinary resources stays on the classic binding path.
             std::set<uint32_t> argumentSets;
             if (useArgumentBuffers)
             {
                 for (const auto& entry : entries)
                 {
-                    if (entry.runtimeArray)
+                    if (entry.bindless && entry.descriptorSet < bindlessCapacities.size()
+                        && bindlessCapacities[entry.descriptorSet] != 0)
                         argumentSets.insert(entry.descriptorSet);
                 }
                 for (const auto& entry : entries)
                 {
-                    if (!entry.runtimeArray)
+                    if (!entry.bindless)
                         argumentSets.erase(entry.descriptorSet);
                 }
             }
@@ -385,7 +401,7 @@ namespace nvrhi::metal
                 resource.binding = entry.binding;
                 resource.kind = entry.kind;
                 resource.writeable = entry.writeable;
-                resource.runtimeArray = entry.runtimeArray;
+                resource.bindless = entry.bindless;
                 resource.index = entry.index;
                 resource.count = entry.count;
                 resource.bufferArray = entry.bufferArray;

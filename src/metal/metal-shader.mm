@@ -79,9 +79,6 @@ namespace nvrhi::metal
 
     const Shader::BindlessTranslation* Shader::getTranslationForCapacities(Context& context, const std::vector<uint32_t>& capacities) const
     {
-        if (!translated.usesBindless)
-            return nullptr;
-
         {
             std::lock_guard< std::mutex > lock(bindlessTranslationsMutex);
             const auto cached = bindlessTranslations.find(capacities);
@@ -294,7 +291,7 @@ namespace nvrhi::metal
 
             for (const auto& resource : translated.resources)
             {
-                if (resource.runtimeArray)
+                if (resource.bindless)
                 {
                     plan.bindlessArrays.push_back(resource);
                     continue;
@@ -342,10 +339,16 @@ namespace nvrhi::metal
             return nullptr;
         }
 
-        // A runtime sized array has no function until the descriptor table capacity
-        // is known; the pipeline compiles the translation for its capacity.
+        // Runtime arrays and fixed arrays beyond the classic binding limits need
+        // the pipeline's layouts before their Metal function can be compiled.
         if (translated.usesBindless)
             return ShaderHandle::Create(shader);
+        for (const ResourceBinding& resource : translated.resources)
+        {
+            const uint32_t limit = resource.kind == ResourceKind::Buffer ? 31 : resource.kind == ResourceKind::Texture ? 128 : 16;
+            if (uint64_t(resource.index) + resource.count > limit)
+                return ShaderHandle::Create(shader);
+        }
 
         NSError* nsError = nil;
         MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
@@ -383,9 +386,9 @@ namespace nvrhi::metal
 
         // A bindless shader gets its function per table capacity, so its constants
         // cannot fold into one function.
-        if (baseShader->translated.usesBindless)
+        if (baseShader->translated.usesBindless || !baseShader->library)
         {
-            m_Context.error("createShaderSpecialization: a shader with a runtime sized array cannot be specialised");
+            m_Context.error("createShaderSpecialization: a shader requiring pipeline-dependent translation cannot be specialised");
             return nullptr;
         }
 
@@ -553,8 +556,7 @@ namespace nvrhi::metal
 
     static std::vector<uint32_t> getBindlessCapacities(const BindingLayoutVector& layouts, const std::vector<uint32_t>& sets)
     {
-        // An unbound table uses capacity one; the shader must not access it.
-        std::vector<uint32_t> capacities(c_MaxBindingLayouts, 1);
+        std::vector<uint32_t> capacities(c_MaxBindingLayouts, 0);
         for (uint32_t index = 0; index < layouts.size(); ++index)
         {
             const BindingLayout* layout = checked_cast<BindingLayout*>(layouts[index].Get());
@@ -564,20 +566,37 @@ namespace nvrhi::metal
         return capacities;
     }
 
+    static bool needsBindlessTranslation(const Shader* shader, const std::vector<uint32_t>& capacities)
+    {
+        if (shader->translated.usesBindless || !shader->function)
+            return true;
+        for (const ResourceBinding& resource : shader->translated.resources)
+        {
+            if (resource.descriptorSet < capacities.size() && capacities[resource.descriptorSet] != 0)
+                return true;
+        }
+        return false;
+    }
+
     static const TranslatedShader* resolveTranslation(Context& context, const Shader* shader, const std::vector<uint32_t>& capacities)
     {
-        if (!shader->translated.usesBindless)
+        if (!needsBindlessTranslation(shader, capacities))
             return &shader->translated;
-
+        if (shader->baseShader)
+        {
+            context.error("specialised shaders with bindless layouts are not supported");
+            return nullptr;
+        }
         const Shader::BindlessTranslation* translation = shader->getTranslationForCapacities(context, capacities);
         return translation ? &translation->translated : nullptr;
     }
 
     static id<MTLFunction> resolveFunction(Context& context, const Shader* shader, const std::vector<uint32_t>& capacities)
     {
-        if (!shader->translated.usesBindless)
+        if (!needsBindlessTranslation(shader, capacities))
             return shader->function;
-
+        if (shader->baseShader)
+            return nil;
         const Shader::BindlessTranslation* translation = shader->getTranslationForCapacities(context, capacities);
         return translation ? translation->function : nil;
     }

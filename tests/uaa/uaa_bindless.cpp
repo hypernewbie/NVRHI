@@ -907,6 +907,81 @@ namespace nvrhi::uaa
         UAA_CHECK_EQ(out[1], 0xCAFE0001u, "Pending dispatch slot 0 buffer mismatch");
     }
 
+    static void testBindlessFixedArray(TestContext& ctx)
+    {
+        TestFixture& fix = requireFixture(ctx);
+        requireBindlessSupport(ctx, fix);
+        if (fix.api() == GraphicsAPI::D3D12)
+            ctx.skip("This shader uses Vulkan descriptor set indices");
+        IDevice* dev = fix.device();
+        ShaderHandle shader = fix.createShader("cs_fixed_texture_array", ShaderType::Compute);
+        BindingLayoutHandle arrayLayout = dev->createBindingLayout(fix.makeBindingLayoutDesc(ShaderType::Compute)
+            .addItem(BindingLayoutItem::Texture_SRV(0).setSize(4)));
+        BindingLayoutHandle outputLayout = dev->createBindingLayout(fix.makeBindingLayoutDesc(ShaderType::Compute)
+            .addItem(BindingLayoutItem::StructuredBuffer_UAV(0)));
+        BindlessLayoutDesc desc;
+        desc.setVisibility(ShaderType::Compute).setLayoutType(BindlessLayoutDesc::LayoutType::Immutable)
+            .setMaxCapacity(8).setUpdateAfterBind(false).addRegisterSpace(BindingLayoutItem::Texture_SRV(0));
+        BindingLayoutHandle tableLayout = dev->createBindlessLayout(desc);
+        UAA_CHECK(shader && arrayLayout && outputLayout && tableLayout, "Fixed array shader or layouts are null");
+
+        std::array<TextureHandle, 4> textures = {
+            createSolidRgba8Texture(fix, 11, 22, 33, 255, "tbl_fixed0"),
+            createSolidRgba8Texture(fix, 44, 55, 66, 255, "tbl_fixed1"),
+            createSolidRgba8Texture(fix, 77, 88, 99, 255, "tbl_fixed2"),
+            createSolidRgba8Texture(fix, 111, 122, 133, 255, "tbl_fixed3")
+        };
+        BufferHandle output = createStructuredBuffer(fix, 16, "tbl_fixed_out", true);
+        UAA_CHECK(textures[0] && textures[1] && textures[2] && textures[3] && output, "Fixed array resources are null");
+        BindingSetDesc arrayDesc;
+        DescriptorTableHandle table = dev->createDescriptorTable(tableLayout);
+        UAA_CHECK(table != nullptr, "Fixed array table is null");
+        for (uint32_t i = 0; i < textures.size(); ++i)
+        {
+            arrayDesc.addItem(BindingSetItem::Texture_SRV(0, textures[i]).setArrayElement(i));
+            UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Texture_SRV(i, textures[i])), "Fixed array table write failed");
+        }
+        BindingSetHandle arraySet = dev->createBindingSet(arrayDesc, arrayLayout);
+        BindingSetHandle outputSet = dev->createBindingSet(BindingSetDesc()
+            .addItem(BindingSetItem::StructuredBuffer_UAV(0, output)), outputLayout);
+        ComputePipelineHandle arrayPso = dev->createComputePipeline(ComputePipelineDesc()
+            .setComputeShader(shader).addBindingLayout(arrayLayout).addBindingLayout(outputLayout));
+        ComputePipelineHandle tablePso = dev->createComputePipeline(ComputePipelineDesc()
+            .setComputeShader(shader).addBindingLayout(tableLayout).addBindingLayout(outputLayout));
+        UAA_CHECK(arraySet && outputSet && arrayPso && tablePso, "Fixed array bindings or pipelines are null");
+
+        auto run = [&](IComputePipeline* pipeline, IBindingSet* first)
+        {
+            CommandListHandle cmd = dev->createCommandList();
+            cmd->open();
+            cmd->setComputeState(ComputeState().setPipeline(pipeline).addBindingSet(first).addBindingSet(outputSet));
+            cmd->dispatch(1);
+            cmd->close();
+            fix.submitAndWait(cmd);
+            std::array<uint32_t, 4> actual = {};
+            fix.readbackBuffer(output, actual.data(), sizeof(actual));
+            const std::array<uint32_t, 4> expected = {
+                packRgba8(11, 22, 33, 255), packRgba8(44, 55, 66, 255),
+                packRgba8(77, 88, 99, 255), packRgba8(111, 122, 133, 255)
+            };
+            for (size_t i = 0; i < expected.size(); ++i)
+                UAA_CHECK_EQ(actual[i], expected[i], "Fixed array result mismatch at element " + std::to_string(i));
+        };
+        run(arrayPso, arraySet);
+        run(tablePso, table);
+        run(arrayPso, arraySet);
+
+        if (fix.api() == GraphicsAPI::METAL)
+        {
+            desc.setMaxCapacity(2);
+            BindingLayoutHandle smallLayout = dev->createBindlessLayout(desc);
+            ExpectErrorsGuard guard(fix);
+            ComputePipelineHandle smallPso = dev->createComputePipeline(ComputePipelineDesc()
+                .setComputeShader(shader).addBindingLayout(smallLayout).addBindingLayout(outputLayout));
+            UAA_CHECK(smallPso == nullptr && guard.errorCount() > 0, "A shader array larger than its table must be rejected");
+        }
+    }
+
     static void runBindlessMultipleLayouts(TestContext& ctx, bool explicitSets)
     {
         TestFixture& fix = requireFixture(ctx);
@@ -1871,6 +1946,7 @@ namespace nvrhi::uaa
         UAA_REGISTER_TEST("TBL.UpdateAfterBind", "core", testBindlessUpdateAfterBind);
         UAA_REGISTER_TEST("TBL.PendingLifetime", "core", testBindlessPendingLifetime);
         UAA_REGISTER_TEST("TBL.LargeOrdinary", "core", testBindlessLargeOrdinary);
+        UAA_REGISTER_TEST("TBL.FixedArray", "core", testBindlessFixedArray);
         UAA_REGISTER_TEST("TBL.MultipleLayouts", "core", testBindlessMultipleLayouts);
         UAA_REGISTER_TEST("TBL.MultipleLayoutsExplicit", "core", testBindlessMultipleLayoutsExplicit);
         UAA_REGISTER_TEST("TBL.Samplers", "core", testBindlessSamplers);

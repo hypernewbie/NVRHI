@@ -45,7 +45,7 @@ namespace nvrhi::metal
         uint32_t binding = 0;
         ResourceKind kind = ResourceKind::Buffer;
         bool writeable = false;
-        bool runtimeArray = false;
+        bool bindless = false;
         uint32_t index = 0;
         uint32_t count = 1;
         // A texture array of texture buffers holds the typed buffer views of NVRHI,
@@ -87,8 +87,8 @@ namespace nvrhi::metal
 
     // Translates a SPIR-V module to MSL. The resources are given explicit Metal indices
     // so that the command list can bind them without parsing the generated source.
-    // Runtime sized arrays use the capacity of their descriptor set. An empty
-    // capacity vector only reports whether the module uses them.
+    // Bindless capacities identify table-backed descriptor sets and size their
+    // runtime arrays. An empty vector only reports whether runtime arrays exist.
     bool translateSpirvToMSL(
         const void* spirv,
         size_t size,

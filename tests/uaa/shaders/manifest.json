@@ -343,6 +343,32 @@
       "sha256": "5833bc6e20e87072a8e8a334807b8f5989e86718ca5ebe03da1362e955d5162f"
     },
     {
+      "name": "cs_fixed_texture_array",
+      "kind": "spirv",
+      "source": "hlsl/cs_fixed_texture_array.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2"
+      ],
+      "output": "bin/spirv/cs_fixed_texture_array.spv",
+      "bytes": 2340,
+      "sha256": "bc09f4f9a57bded4fe0410a3431d0fafde590fe4c037582ce26bd9d10c7f3c7d"
+    },
+    {
+      "name": "cs_fixed_texture_array",
+      "kind": "dxil",
+      "source": "hlsl/cs_fixed_texture_array.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_fixed_texture_array.dxil",
+      "bytes": 3828,
+      "sha256": "3196e1e788691fe45b45b70093277bb03aeda5b8d2de99bceecb45dea9f9e648"
+    },
+    {
       "name": "cs_bindless_sampler",
       "kind": "spirv",
       "source": "hlsl/cs_bindless_sampler.hlsl",
@@ -1117,6 +1143,17 @@
       "output": "frozen_metal/cs_bindless_uint_sparse.spv",
       "bytes": 972,
       "sha256": "362554bb80dabfc44416eaf0f609f79583b08ef6f989a863d8c48b0d9bcb46f6"
+    },
+    {
+      "name": "cs_fixed_texture_array",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_fixed_texture_array.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_fixed_texture_array.spv",
+      "bytes": 2340,
+      "sha256": "bc09f4f9a57bded4fe0410a3431d0fafde590fe4c037582ce26bd9d10c7f3c7d"
     },
     {
       "name": "cs_metal_custom_entry",

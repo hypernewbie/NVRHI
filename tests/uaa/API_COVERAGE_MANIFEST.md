@@ -81,7 +81,7 @@ Known gaps include D3D11/D3D12 native extension methods that have no dedicated c
 | `createBindingSet(const BindingSetDesc&, IBindingLayout*)` | `BND.BindingSet`, `BND.BindingLifetime`, `BND.Invalid`, `UTL.BindingSet` | MAPPED | All resource binding types + `trackLiveness` |
 | `createDescriptorTable(IBindingLayout*)` | `TBL.CreateWrite`, `TBL.CreateWrite`, `STR.Resize` | GATED_OPTIONAL | Gated on bindless-capable backends |
 | `resizeDescriptorTable(IDescriptorTable*, uint32_t, bool)` | `TBL.CreateWrite`, `STR.Resize` | GATED_OPTIONAL | Grow, shrink, `keepContents` true/false |
-| `writeDescriptorTable(IDescriptorTable*, const BindingSetItem&)` | `TBL.CreateWrite`, `TBL.LargeOrdinary`, `TBL.Samplers`, `TBL.TypedUav`, `TBL.UpdateAfterBind`, `TBL.PreSubmitUpdate`, `TBL.UintSparse`, `STR.Resize` | GATED_OPTIONAL | Metal does not support update-after-bind. The validation layer rejects bindless samplers. |
+| `writeDescriptorTable(IDescriptorTable*, const BindingSetItem&)` | `TBL.CreateWrite`, `TBL.FixedArray`, `TBL.LargeOrdinary`, `TBL.Samplers`, `TBL.TypedUav`, `TBL.UpdateAfterBind`, `TBL.PreSubmitUpdate`, `TBL.UintSparse`, `STR.Resize` | GATED_OPTIONAL | Metal does not support update-after-bind. The validation layer rejects bindless samplers. |
 | `createOpacityMicromap(const rt::OpacityMicromapDesc&)` | `RT.OpacityMicromap`, `DEV.OptionalFailures` | GATED_OPTIONAL | Gated by `Feature::RayTracingOpacityMicromap` |
 | `createAccelStruct(const rt::AccelStructDesc&)` | `RT.BottomLevel`, `RT.TopLevel`, `RT.InlineQuery`, `RT.Pipeline`, `STA.RayStructures` | GATED_OPTIONAL |  |
 | `getAccelStructMemoryRequirements(rt::IAccelStruct*)` | `RT.Placement`, `HEAP.Requirements` | GATED_OPTIONAL |  |
