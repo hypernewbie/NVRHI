@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -1232,9 +1233,30 @@ namespace nvrhi::uaa
             std::vector<std::string> cfgArgs = {
                 "cmake", "-S", consumerSrc.string(), "-B", consumerBuild.string()
             };
+            // A consumer of an instrumented static library needs the same compiler
+            // and runtime flags as the library.
+            for (const auto& entry : {
+                std::pair<const char*, const char*>{"CMAKE_CXX_COMPILER", "FILEPATH"},
+                {"CMAKE_CXX_FLAGS", "STRING"},
+                {"CMAKE_EXE_LINKER_FLAGS", "STRING"} })
+            {
+                const std::string value = readCacheValue(cachePath, std::string(entry.first) + ":" + entry.second + "=");
+                if (!value.empty())
+                    cfgArgs.push_back(std::string("-D") + entry.first + "=" + value);
+            }
             if (!buildConfig.empty())
             {
                 cfgArgs.push_back("-DCMAKE_BUILD_TYPE=" + buildConfig);
+                std::string configName = buildConfig;
+                std::transform(configName.begin(), configName.end(), configName.begin(),
+                    [](unsigned char ch) { return char(std::toupper(ch)); });
+                for (const char* prefix : {"CMAKE_CXX_FLAGS_", "CMAKE_EXE_LINKER_FLAGS_"})
+                {
+                    const std::string name = std::string(prefix) + configName;
+                    const std::string value = readCacheValue(cachePath, name + ":STRING=");
+                    if (!value.empty())
+                        cfgArgs.push_back("-D" + name + "=" + value);
+                }
             }
 
             int exitCode = -1;
