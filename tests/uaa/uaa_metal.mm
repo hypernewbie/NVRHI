@@ -502,6 +502,7 @@ namespace nvrhi::uaa
                     m_DeviceInfo.backendName = "metal";
                     m_DeviceInfo.deviceName = m_MtlDevice.name ? m_MtlDevice.name.UTF8String : "MetalDevice";
                     m_DeviceInfo.driverName = "Apple Metal";
+                    m_DeviceInfo.metalArgumentBuffersTier2 = m_MtlDevice.argumentBuffersSupport == MTLArgumentBuffersTier2;
                     NSString* osVer = [[NSProcessInfo processInfo] operatingSystemVersionString];
                     m_DeviceInfo.driverVersion = osVer ? osVer.UTF8String : "Metal";
                     m_DeviceInfo.osName = "macOS";

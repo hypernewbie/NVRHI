@@ -271,16 +271,11 @@ namespace nvrhi::uaa
         requireBindlessSupport(ctx, fix);
         IDevice* dev = fix.device();
 
-        // Metal's classic non-argument-buffer binding path places BufTable + 4 regular buffers
-        // in the 31-buffer argument table, capping cs_bindless_tex_buf capacity at 27.
-        const bool isMetal = (fix.api() == GraphicsAPI::METAL);
-        const uint32_t capacity = isMetal ? 24u : 32u;
-        const uint32_t midSlot = isMetal ? 11u : 15u;
-        const uint32_t lastSlot = isMetal ? 23u : 31u;
-        if (isMetal)
-        {
-            ctx.note("Metal classic binding path caps cs_bindless_tex_buf capacity at 27 (31-buffer limit); using capacity=24 with sparse slots 0, 11, 23");
-        }
+        // Tier 1 uses classic bindings, which limit this shader to 27 table buffers.
+        const bool metalTier1 = fix.api() == GraphicsAPI::METAL && !fix.deviceInfo().metalArgumentBuffersTier2;
+        const uint32_t capacity = metalTier1 ? 24u : 32u;
+        const uint32_t midSlot = metalTier1 ? 11u : 15u;
+        const uint32_t lastSlot = metalTier1 ? 23u : 31u;
 
         BindlessHarness h = createBindlessHarness(ctx, fix, capacity, 4u);
         UAA_CHECK_EQ(h.table->getCapacity(), capacity, "DescriptorTable getCapacity() mismatch");
@@ -884,8 +879,8 @@ namespace nvrhi::uaa
             }
 
             // Drop tracked caller handles (and unused slot 4 handles) before releasing the gate.
-            // On Metal, encoded MTLTexture/MTLBuffer objects are retained by the command buffer, so table/slot 0
-            // handles can also be released here; on Vulkan/D3D12, IDescriptorTable has no liveness tracking.
+            // Metal keeps the referenced resources alive through completion. Vulkan/D3D12
+            // descriptor tables have no liveness tracking.
             if (fix.api() == GraphicsAPI::METAL)
             {
                 table = nullptr;
@@ -912,6 +907,142 @@ namespace nvrhi::uaa
         UAA_CHECK_EQ(out[1], 0xCAFE0001u, "Pending dispatch slot 0 buffer mismatch");
     }
 
+    static void testBindlessTypedUav(TestContext& ctx)
+    {
+        TestFixture& fix = requireFixture(ctx);
+        requireBindlessSupport(ctx, fix);
+        if (fix.api() == GraphicsAPI::D3D12)
+            ctx.skip("D3D12 descriptor tables require explicit allocation");
+        IDevice* dev = fix.device();
+
+        ShaderHandle cs = fix.createShader("cs_bindless_typed_uav", ShaderType::Compute);
+        BindlessLayoutDesc desc;
+        desc.setVisibility(ShaderType::Compute).setLayoutType(BindlessLayoutDesc::LayoutType::Immutable)
+            .setMaxCapacity(4).setUpdateAfterBind(false).addRegisterSpace(BindingLayoutItem::TypedBuffer_UAV(0));
+        BindingLayoutHandle layout = dev->createBindlessLayout(desc);
+        UAA_CHECK(cs && layout, "Typed buffer shader or layout is null");
+        DescriptorTableHandle table = dev->createDescriptorTable(layout);
+        ComputePipelineHandle pso = dev->createComputePipeline(ComputePipelineDesc().setComputeShader(cs).addBindingLayout(layout));
+
+        BufferDesc bufferDesc;
+        bufferDesc.setByteSize(16).setCanHaveTypedViews(true).setCanHaveUAVs(true).setFormat(Format::R32_UINT)
+            .setInitialState(ResourceStates::UnorderedAccess).setKeepInitialState(true);
+        BufferHandle buffer = dev->createBuffer(bufferDesc);
+        UAA_CHECK(table && pso && buffer, "Typed buffer resources are null");
+        UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::TypedBuffer_UAV(1, buffer, Format::R32_UINT)), "Typed buffer write failed");
+
+        CommandListHandle cmd = dev->createCommandList();
+        cmd->open();
+        cmd->setComputeState(ComputeState().setPipeline(pso).addBindingSet(table));
+        cmd->dispatch(1);
+        cmd->close();
+        fix.submitAndWait(cmd);
+        uint32_t out = 0;
+        fix.readbackBuffer(buffer, &out, sizeof(out));
+        UAA_CHECK_EQ(out, 0x12345678u, "Typed buffer UAV result mismatch");
+    }
+
+    static void testBindlessSamplers(TestContext& ctx)
+    {
+        TestFixture& fix = requireFixture(ctx);
+        requireBindlessSupport(ctx, fix);
+        if (fix.api() == GraphicsAPI::D3D12)
+            ctx.skip("D3D12 immutable sampler tables use a different descriptor heap");
+        if (fix.isValidationActive())
+            ctx.skip("NVRHI validation does not support bindless samplers");
+        IDevice* dev = fix.device();
+
+        ShaderHandle cs = fix.createShader("cs_bindless_sampler", ShaderType::Compute);
+        BindlessLayoutDesc tableDesc;
+        tableDesc.setVisibility(ShaderType::Compute)
+            .setLayoutType(BindlessLayoutDesc::LayoutType::Immutable)
+            .setMaxCapacity(4)
+            .setUpdateAfterBind(false)
+            .addRegisterSpace(BindingLayoutItem::Sampler(0));
+        BindingLayoutHandle tableLayout = dev->createBindlessLayout(tableDesc);
+        BindingLayoutHandle regularLayout = dev->createBindingLayout(
+            fix.makeBindingLayoutDesc(ShaderType::Compute, regularSpaceForBindless(fix), false)
+                .addItem(BindingLayoutItem::Texture_SRV(0))
+                .addItem(BindingLayoutItem::StructuredBuffer_UAV(1)));
+        UAA_CHECK(cs && tableLayout && regularLayout, "Sampler table layouts or shader are null");
+
+        DescriptorTableHandle table = dev->createDescriptorTable(tableLayout);
+        ComputePipelineHandle pso = dev->createComputePipeline(ComputePipelineDesc()
+            .setComputeShader(cs).addBindingLayout(tableLayout).addBindingLayout(regularLayout));
+        SamplerHandle clamp = dev->createSampler(SamplerDesc().setAllFilters(false).setAllAddressModes(SamplerAddressMode::Clamp));
+        SamplerHandle wrap = dev->createSampler(SamplerDesc().setAllFilters(false).setAllAddressModes(SamplerAddressMode::Wrap));
+        UAA_CHECK(table && pso && clamp && wrap, "Sampler table resources are null");
+        UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Sampler(0, clamp)), "Write clamp sampler failed");
+        UAA_CHECK(dev->writeDescriptorTable(table, BindingSetItem::Sampler(1, wrap)), "Write wrap sampler failed");
+
+        TextureDesc textureDesc;
+        textureDesc.setWidth(2).setHeight(1).setFormat(Format::RGBA8_UNORM)
+            .setInitialState(ResourceStates::ShaderResource).setKeepInitialState(true);
+        textureDesc.isShaderResource = true;
+        TextureHandle texture = dev->createTexture(textureDesc);
+        BufferHandle output = createStructuredBuffer(fix, 32, "tbl_samplers_out", true);
+        UAA_CHECK(texture && output, "Sampler test texture or output is null");
+        const std::array<uint8_t, 8> pixels = { 255, 0, 0, 255, 0, 255, 0, 255 };
+        fix.uploadTexture2D(texture, 0, 0, pixels.data(), 8u);
+        BindingSetHandle regularSet = dev->createBindingSet(BindingSetDesc()
+            .addItem(BindingSetItem::Texture_SRV(0, texture))
+            .addItem(BindingSetItem::StructuredBuffer_UAV(1, output)), regularLayout);
+        UAA_CHECK(regularSet != nullptr, "Sampler test binding set is null");
+
+        CommandListHandle cmd = dev->createCommandList();
+        cmd->open();
+        cmd->setComputeState(ComputeState().setPipeline(pso).addBindingSet(table).addBindingSet(regularSet));
+        cmd->dispatch(1);
+        cmd->close();
+        fix.submitAndWait(cmd);
+        std::array<uint32_t, 8> out = {};
+        fix.readbackBuffer(output, out.data(), sizeof(out));
+        UAA_CHECK_EQ(out[0], 0u, "Clamp sampler red mismatch");
+        UAA_CHECK_EQ(out[1], 255u, "Clamp sampler green mismatch");
+        UAA_CHECK_EQ(out[4], 255u, "Wrap sampler red mismatch");
+        UAA_CHECK_EQ(out[5], 0u, "Wrap sampler green mismatch");
+    }
+
+    static void testBindlessLargeOrdinary(TestContext& ctx)
+    {
+        TestFixture& fix = requireFixture(ctx);
+        requireBindlessSupport(ctx, fix);
+        if (fix.api() == GraphicsAPI::D3D12)
+            ctx.skip("D3D12 descriptor tables require explicit allocation");
+        if (fix.api() == GraphicsAPI::METAL && !fix.deviceInfo().metalArgumentBuffersTier2)
+            ctx.skip("Metal Tier 2 argument buffers are required for this capacity");
+        IDevice* dev = fix.device();
+
+        BindlessHarness h = createBindlessHarness(ctx, fix, 256u, 3u, false);
+        TextureHandle tex0 = createSolidRgba8Texture(fix, 12, 24, 36, 255, "tbl_large_tex0");
+        TextureHandle texMid = createSolidRgba8Texture(fix, 48, 60, 72, 255, "tbl_large_tex127");
+        TextureHandle texLast = createSolidRgba8Texture(fix, 84, 96, 108, 255, "tbl_large_tex255");
+        BufferHandle buf0 = createStructuredWord(fix, 0xE000u, "tbl_large_buf0");
+        BufferHandle bufMid = createStructuredBuffer(fix, 512, "tbl_large_buf127");
+        BufferHandle bufLast = createStructuredWord(fix, 0xE0FFu, "tbl_large_buf255");
+        UAA_CHECK(tex0 && texMid && texLast && buf0 && bufMid && bufLast, "Large table resources null");
+        const uint32_t midWord = 0xE07Fu;
+        fix.uploadBuffer(bufMid, &midWord, sizeof(midWord), 256);
+
+        UAA_CHECK(dev->writeDescriptorTable(h.table, BindingSetItem::Texture_SRV(0, tex0)), "Write tex0 failed");
+        UAA_CHECK(dev->writeDescriptorTable(h.table, BindingSetItem::Texture_SRV(127, texMid)), "Write tex127 failed");
+        UAA_CHECK(dev->writeDescriptorTable(h.table, BindingSetItem::Texture_SRV(255, texLast)), "Write tex255 failed");
+        UAA_CHECK(dev->writeDescriptorTable(h.table, BindingSetItem::StructuredBuffer_SRV(0, buf0)), "Write buf0 failed");
+        UAA_CHECK(dev->writeDescriptorTable(h.table, BindingSetItem::StructuredBuffer_SRV(127, bufMid, Format::UNKNOWN, BufferRange(256, 16))), "Write buf127 failed");
+        UAA_CHECK(dev->writeDescriptorTable(h.table, BindingSetItem::StructuredBuffer_SRV(255, bufLast)), "Write buf255 failed");
+
+        runBindlessDispatch(ctx, fix, h, { 0u, 127u, 255u }, { 0u, 127u, 255u });
+
+        std::array<uint32_t, 6> out = {};
+        fix.readbackBuffer(h.outBuf, out.data(), sizeof(out));
+        UAA_CHECK_EQ(out[0], packRgba8(12, 24, 36, 255), "Slot 0 tex mismatch");
+        UAA_CHECK_EQ(out[1], 0xE000u, "Slot 0 buf mismatch");
+        UAA_CHECK_EQ(out[2], packRgba8(48, 60, 72, 255), "Slot 127 tex mismatch");
+        UAA_CHECK_EQ(out[3], 0xE07Fu, "Slot 127 buf mismatch");
+        UAA_CHECK_EQ(out[4], packRgba8(84, 96, 108, 255), "Slot 255 tex mismatch");
+        UAA_CHECK_EQ(out[5], 0xE0FFu, "Slot 255 buf mismatch");
+    }
+
     static void testBindlessLimits(TestContext& ctx)
     {
         TestFixture& fix = requireFixture(ctx);
@@ -920,8 +1051,7 @@ namespace nvrhi::uaa
 
         if (fix.api() == GraphicsAPI::METAL)
         {
-            // Metal's classic non-argument-buffer binding path reserves 4 buffers for cs_bindless_tex_buf's
-            // regular set and allows up to 31 buffer bindings per compute kernel (maxCapacity == 27).
+            // Exercise the boundary of the classic binding path, which is also valid on Tier 2.
             const uint32_t metalLimit = 27u;
             BindlessHarness h = createBindlessHarness(ctx, fix, metalLimit, 4u);
             UAA_CHECK_EQ(h.table->getCapacity(), metalLimit, "Metal boundary capacity 27 mismatch");
@@ -952,6 +1082,7 @@ namespace nvrhi::uaa
             UAA_CHECK_EQ(out[4], packRgba8(65, 75, 85, 255), "Metal limit slot 26 tex mismatch");
             UAA_CHECK_EQ(out[5], 0xD026u, "Metal limit slot 26 buf mismatch");
 
+            if (!fix.deviceInfo().metalArgumentBuffersTier2)
             {
                 ExpectErrorsGuard guard(fix);
                 BindingLayoutHandle largeLayout = makeTexBufBindlessLayout(fix, 256u, false);
@@ -961,10 +1092,10 @@ namespace nvrhi::uaa
                         .setComputeShader(h.cs)
                         .addBindingLayout(largeLayout)
                         .addBindingLayout(h.regularLayout));
-                UAA_CHECK(oversizedPso == nullptr, "Oversized capacity 256 must fail cleanly on Metal classic binding path");
+                UAA_CHECK(oversizedPso == nullptr, "Oversized capacity 256 must fail on the Metal classic binding path");
             }
 
-            ctx.skip("Metal classic binding path (without argument buffers) limits descriptor table capacity to <= 27 buffers for cs_bindless_tex_buf; verified boundary capacity 27 and clean failure at 256");
+            ctx.skip("Metal does not support update-after-bind");
         }
 
         const uint32_t largeCapacity = 256u;
@@ -1625,6 +1756,9 @@ namespace nvrhi::uaa
         UAA_REGISTER_TEST("TBL.Clear", "core", testBindlessClear);
         UAA_REGISTER_TEST("TBL.UpdateAfterBind", "core", testBindlessUpdateAfterBind);
         UAA_REGISTER_TEST("TBL.PendingLifetime", "core", testBindlessPendingLifetime);
+        UAA_REGISTER_TEST("TBL.LargeOrdinary", "core", testBindlessLargeOrdinary);
+        UAA_REGISTER_TEST("TBL.Samplers", "core", testBindlessSamplers);
+        UAA_REGISTER_TEST("TBL.TypedUav", "core", testBindlessTypedUav);
         UAA_REGISTER_TEST("TBL.Limits", "core", testBindlessLimits);
         UAA_REGISTER_TEST("TBL.Unsupported", "core", testBindlessUnsupported);
         UAA_REGISTER_TEST("TBL.TwoTextureKinds", "core", testBindlessTwoTextureKinds);

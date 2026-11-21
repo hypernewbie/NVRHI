@@ -977,6 +977,9 @@ namespace nvrhi::metal
     {
         const BindingLayout* layout = checked_cast<BindingLayout*>(table->layout.Get());
 
+        for (const auto& argumentBuffer : plan.argumentBuffers)
+            bindTableArgumentBuffer(table, plan, argumentBuffer);
+
         for (size_t space = 0; space < table->slots.size(); ++space)
         {
             ResourceKind kind = ResourceKind::Buffer;
@@ -994,9 +997,166 @@ namespace nvrhi::metal
                 if (array.kind != kind || array.writeable != writeable || array.binding != binding)
                     continue;
 
-                bindTableArray(table->slots[space], array);
+                const auto argumentBuffer = std::find_if(plan.argumentBuffers.begin(), plan.argumentBuffers.end(),
+                    [&array](const PipelineBindingPlan::ArgumentBuffer& entry) { return entry.stage == array.stage; });
+                if (argumentBuffer == plan.argumentBuffers.end())
+                    bindTableArray(table->slots[space], array);
             }
         }
+    }
+
+    void CommandList::bindTableArgumentBuffer(DescriptorTable* table, const PipelineBindingPlan& plan, const PipelineBindingPlan::ArgumentBuffer& argumentBuffer)
+    {
+        id<MTLArgumentEncoder> encoder = [argumentBuffer.function newArgumentEncoderWithBufferIndex:argumentBuffer.index];
+        if (!encoder)
+        {
+            m_Device->getContext().error("bindDescriptorTable: failed to create an argument encoder");
+            return;
+        }
+
+        id<MTLBuffer> buffer = [m_Device->getContext().device newBufferWithLength:encoder.encodedLength options:MTLResourceStorageModeShared];
+        if (!buffer)
+        {
+            m_Device->getContext().error("bindDescriptorTable: failed to allocate an argument buffer");
+            return;
+        }
+        [encoder setArgumentBuffer:buffer offset:0];
+
+        // Argument buffers do not retain their resources. Keep each resource alive
+        // through submission and declare its usage to Metal before the dispatch or draw.
+        std::set<IResource*> referenced;
+        std::map<void*, MTLResourceUsage> resources;
+        const BindingLayout* layout = checked_cast<BindingLayout*>(table->layout.Get());
+        for (const ResourceBinding& array : plan.bindlessArrays)
+        {
+            if (array.stage != argumentBuffer.stage)
+                continue;
+
+            const std::vector<BindingSetItem>* slots = nullptr;
+            if (array.binding < table->slots.size())
+            {
+                ResourceKind kind = ResourceKind::Buffer;
+                bool writeable = false;
+                const ResourceType type = layout->bindlessDesc.registerSpaces[array.binding].type;
+                const bool typedBuffer = type == ResourceType::TypedBuffer_SRV || type == ResourceType::TypedBuffer_UAV;
+                if (getBindlessArrayShape(type, kind, writeable) && array.kind == kind && array.writeable == writeable
+                    && (kind != ResourceKind::Texture || array.bufferArray == typedBuffer))
+                    slots = &table->slots[array.binding];
+            }
+
+            id<MTLBuffer> nullBuffer = nil;
+            id<MTLTexture> nullTexture = nil;
+            id<MTLSamplerState> nullSampler = nil;
+            for (uint32_t slot = 0; slot < array.count; ++slot)
+            {
+                const BindingSetItem* item = slots && slot < slots->size() ? &(*slots)[slot] : nullptr;
+                if (item && (item->type == ResourceType::None || !item->resourceHandle))
+                    item = nullptr;
+
+                id<MTLResource> resource = nil;
+                switch (array.kind)
+                {
+                case ResourceKind::Buffer:
+                {
+                    Buffer* boundBuffer = item ? checked_cast<Buffer*>(item->resourceHandle) : nullptr;
+                    id<MTLBuffer> value = boundBuffer ? boundBuffer->buffer : nil;
+                    if (!value)
+                    {
+                        if (!nullBuffer)
+                            nullBuffer = m_Device->getNullBuffer();
+                        value = nullBuffer;
+                    }
+                    if (!value)
+                    {
+                        m_Device->getContext().error("bindDescriptorTable: failed to create a null buffer");
+                        return;
+                    }
+                    [encoder setBuffer:value offset:boundBuffer && boundBuffer->buffer ? item->range.byteOffset : 0 atIndex:array.index + slot];
+                    resource = value;
+                    break;
+                }
+                case ResourceKind::Texture:
+                {
+                    id<MTLTexture> value = nil;
+                    if (item && array.bufferArray)
+                    {
+                        Buffer* boundBuffer = checked_cast<Buffer*>(item->resourceHandle);
+                        if (boundBuffer && boundBuffer->buffer)
+                            value = getTypedBufferView(m_Device->getContext(), boundBuffer, item->format, item->range.byteOffset, item->range.byteSize);
+                    }
+                    else if (item)
+                    {
+                        Texture* texture = checked_cast<Texture*>(item->resourceHandle);
+                        if (texture && texture->texture)
+                        {
+                            const ComponentMapping mapping = resolveComponentMapping(item->overrideComponentMapping, texture->desc.defaultComponentMapping);
+                            value = texture->getSubresourceView(item->subresources, item->dimension, item->format, mapping);
+                        }
+                    }
+                    if (!value)
+                    {
+                        if (!nullTexture)
+                            nullTexture = array.bufferArray ? m_Device->getNullTextureBuffer(array.format) : m_Device->getNullTexture(array.dimension, array.format);
+                        value = nullTexture;
+                    }
+                    if (!value)
+                    {
+                        m_Device->getContext().error("bindDescriptorTable: failed to create a null texture");
+                        return;
+                    }
+                    [encoder setTexture:value atIndex:array.index + slot];
+                    resource = value;
+                    break;
+                }
+                case ResourceKind::Sampler:
+                {
+                    Sampler* sampler = item ? checked_cast<Sampler*>(item->resourceHandle) : nullptr;
+                    id<MTLSamplerState> value = sampler ? sampler->getArgumentSampler(m_Device->getContext()) : nil;
+                    if (!sampler)
+                    {
+                        if (!nullSampler)
+                            nullSampler = m_Device->getNullSampler();
+                        value = nullSampler;
+                    }
+                    if (!value)
+                    {
+                        m_Device->getContext().error("bindDescriptorTable: failed to create a sampler");
+                        return;
+                    }
+                    [encoder setSamplerState:value atIndex:array.index + slot];
+                    break;
+                }
+                }
+
+                if (item && referenced.insert(item->resourceHandle).second)
+                    m_ReferencedResources.push_back(RefCountPtr<IResource>(item->resourceHandle));
+                if (resource)
+                {
+                    const MTLResourceUsage usage = array.writeable ? MTLResourceUsage(MTLResourceUsageRead | MTLResourceUsageWrite) : MTLResourceUsageRead;
+                    auto& currentUsage = resources[(__bridge void*)resource];
+                    currentUsage = MTLResourceUsage(currentUsage | usage);
+                }
+            }
+        }
+
+        for (const auto& entry : resources)
+        {
+            id<MTLResource> resource = (__bridge id<MTLResource>)entry.first;
+            if (argumentBuffer.stage == ShaderType::Compute && m_ComputeEncoder)
+                [m_ComputeEncoder useResource:resource usage:entry.second];
+            else if (m_RenderEncoder)
+            {
+                const MTLRenderStages stage = argumentBuffer.stage == ShaderType::Vertex ? MTLRenderStageVertex : MTLRenderStageFragment;
+                [m_RenderEncoder useResource:resource usage:entry.second stages:stage];
+            }
+        }
+
+        if (argumentBuffer.stage == ShaderType::Compute && m_ComputeEncoder)
+            [m_ComputeEncoder setBuffer:buffer offset:0 atIndex:argumentBuffer.index];
+        else if (m_RenderEncoder && argumentBuffer.stage == ShaderType::Vertex)
+            [m_RenderEncoder setVertexBuffer:buffer offset:0 atIndex:argumentBuffer.index];
+        else if (m_RenderEncoder && argumentBuffer.stage == ShaderType::Pixel)
+            [m_RenderEncoder setFragmentBuffer:buffer offset:0 atIndex:argumentBuffer.index];
     }
 
     void CommandList::bindTableArray(const std::vector<nvrhi::BindingSetItem>& slots, const ResourceBinding& array)

@@ -53,6 +53,7 @@ namespace nvrhi::uaa
         bool nvrhiValidation = false;
         bool vulkanDrawIndirectCount = false;
         bool vulkanSamplerFilterMinmax = false;
+        bool metalArgumentBuffersTier2 = false;
         std::vector<std::string> enabledExtensions;
     };
 

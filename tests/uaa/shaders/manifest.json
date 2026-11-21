@@ -343,6 +343,58 @@
       "sha256": "5833bc6e20e87072a8e8a334807b8f5989e86718ca5ebe03da1362e955d5162f"
     },
     {
+      "name": "cs_bindless_sampler",
+      "kind": "spirv",
+      "source": "hlsl/cs_bindless_sampler.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2"
+      ],
+      "output": "bin/spirv/cs_bindless_sampler.spv",
+      "bytes": 1344,
+      "sha256": "f568732768784c84e504eff20e5085a6e1ef0bdf3ed87d5d9252b1688f92ddfc"
+    },
+    {
+      "name": "cs_bindless_sampler",
+      "kind": "dxil",
+      "source": "hlsl/cs_bindless_sampler.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_bindless_sampler.dxil",
+      "bytes": 3752,
+      "sha256": "c5cd722f29b735d7be57b46fcea77a20835223ae7c704696901dde624ddbde01"
+    },
+    {
+      "name": "cs_bindless_typed_uav",
+      "kind": "spirv",
+      "source": "hlsl/cs_bindless_typed_uav.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [
+        "-spirv",
+        "-fvk-use-dx-layout",
+        "-fspv-target-env=vulkan1.2"
+      ],
+      "output": "bin/spirv/cs_bindless_typed_uav.spv",
+      "bytes": 712,
+      "sha256": "97a4e4660d3c6ffd4eaf8b0483c25b2bd814f8fdef25a50f1a103bb908544b1c"
+    },
+    {
+      "name": "cs_bindless_typed_uav",
+      "kind": "dxil",
+      "source": "hlsl/cs_bindless_typed_uav.hlsl",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "bin/dxil/cs_bindless_typed_uav.dxil",
+      "bytes": 2864,
+      "sha256": "737da3c5b7c779b5d7bd42687bbf5260241b45ebe09532768040d3e985a457cb"
+    },
+    {
       "name": "cs_bindless_two_tex_kinds",
       "kind": "spirv",
       "source": "hlsl/cs_bindless_two_tex_kinds.hlsl",
@@ -896,6 +948,17 @@
       "sha256": "30d369641a5ced52dac336f29272f272404cf6eef5da4ea26933b7863da54487"
     },
     {
+      "name": "cs_bindless_sampler",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_bindless_sampler.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_bindless_sampler.spv",
+      "bytes": 1344,
+      "sha256": "f568732768784c84e504eff20e5085a6e1ef0bdf3ed87d5d9252b1688f92ddfc"
+    },
+    {
       "name": "cs_bindless_tex_buf",
       "kind": "frozen_metal",
       "source": "bin/spirv/cs_bindless_tex_buf.spv",
@@ -916,6 +979,17 @@
       "output": "frozen_metal/cs_bindless_two_tex_kinds.spv",
       "bytes": 2280,
       "sha256": "02679ed68510e711219cb6fc04eeecf2337a20f975cea67ad850014ba350a1be"
+    },
+    {
+      "name": "cs_bindless_typed_uav",
+      "kind": "frozen_metal",
+      "source": "bin/spirv/cs_bindless_typed_uav.spv",
+      "entry": "main",
+      "target": "cs_6_0",
+      "flags": [],
+      "output": "frozen_metal/cs_bindless_typed_uav.spv",
+      "bytes": 712,
+      "sha256": "97a4e4660d3c6ffd4eaf8b0483c25b2bd814f8fdef25a50f1a103bb908544b1c"
     },
     {
       "name": "cs_bindless_uint_sparse",

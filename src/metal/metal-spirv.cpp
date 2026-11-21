@@ -134,6 +134,7 @@ namespace nvrhi::metal
         uint32_t mslVersionMinor,
         uint32_t bindlessSet,
         uint32_t bindlessCapacity,
+        bool useArgumentBuffer,
         TranslatedShader& out,
         std::string& error)
     {
@@ -258,6 +259,26 @@ namespace nvrhi::metal
                 return true;
             }
 
+            // Only a set containing runtime arrays can use the table argument buffer.
+            // Fixed-size resources in the same set still use the classic binding path.
+            useArgumentBuffer = useArgumentBuffer
+                && std::any_of(entries.begin(), entries.end(), [](const ResourceEntry& entry) { return entry.runtimeArray; })
+                && std::none_of(entries.begin(), entries.end(), [bindlessSet](const ResourceEntry& entry)
+                    { return entry.descriptorSet == bindlessSet && !entry.runtimeArray; });
+
+            if (useArgumentBuffer)
+            {
+                options.argument_buffers = true;
+                options.argument_buffers_tier = spirv_cross::CompilerMSL::Options::ArgumentBuffersTier::Tier2;
+                compiler.set_msl_options(options);
+                compiler.set_argument_buffer_device_address_space(bindlessSet, true);
+                for (const auto& entry : entries)
+                {
+                    if (entry.descriptorSet != bindlessSet)
+                        compiler.add_discrete_descriptor_set(entry.descriptorSet);
+                }
+            }
+
             // Push constants live in their own buffer, so they take the first buffer slot
             // and the regular buffers start after them.
             const bool usesPushConstants = !resources.push_constant_buffers.empty();
@@ -270,11 +291,27 @@ namespace nvrhi::metal
             });
 
             uint32_t nextBuffer = usesPushConstants ? 1 : 0;
+            const uint32_t argumentBufferIndex = nextBuffer;
+            if (useArgumentBuffer)
+                ++nextBuffer;
             uint32_t nextTexture = 0;
             uint32_t nextSampler = 0;
+            uint32_t nextArgument = 0;
 
             for (auto& entry : entries)
             {
+                if (useArgumentBuffer && entry.runtimeArray)
+                {
+                    if (entry.count > UINT32_MAX - nextArgument)
+                    {
+                        error = "bindless argument buffer indices exceed the supported range";
+                        return false;
+                    }
+                    entry.index = nextArgument;
+                    nextArgument += entry.count;
+                    continue;
+                }
+
                 switch (entry.kind)
                 {
                 case ResourceKind::Buffer:
@@ -302,6 +339,16 @@ namespace nvrhi::metal
                 binding.msl_buffer = entry.kind == ResourceKind::Buffer ? entry.index : 0;
                 binding.msl_texture = entry.kind == ResourceKind::Texture ? entry.index : 0;
                 binding.msl_sampler = entry.kind == ResourceKind::Sampler ? entry.index : 0;
+                compiler.add_msl_resource_binding(binding);
+            }
+
+            if (useArgumentBuffer)
+            {
+                spirv_cross::MSLResourceBinding binding;
+                binding.stage = model;
+                binding.desc_set = bindlessSet;
+                binding.binding = spirv_cross::kArgumentBufferBinding;
+                binding.msl_buffer = argumentBufferIndex;
                 compiler.add_msl_resource_binding(binding);
             }
 
@@ -337,6 +384,8 @@ namespace nvrhi::metal
 
             out.usesPushConstants = usesPushConstants;
             out.pushConstantBufferIndex = 0;
+            out.usesArgumentBuffer = useArgumentBuffer;
+            out.argumentBufferIndex = argumentBufferIndex;
             out.stage = stage;
 
             if (model == spv::ExecutionModelGLCompute)

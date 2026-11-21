@@ -94,7 +94,7 @@ namespace nvrhi::metal
         std::string error;
         if (!translateSpirvToMSL(spirv.data(), spirv.size() * sizeof(uint32_t), desc.shaderType, desc.entryName,
             context.mslVersionMajor, context.mslVersionMinor, c_BindlessDescriptorSet, capacity,
-            translation.translated, error))
+            context.device.argumentBuffersSupport == MTLArgumentBuffersTier2, translation.translated, error))
         {
             context.error("getTranslationForCapacity: failed to translate '" + desc.debugName + "': " + error);
             return nullptr;
@@ -286,8 +286,11 @@ namespace nvrhi::metal
 
         // The pipeline binds the resources of its shaders; the descriptor set of a resource
         // is the position of its binding layout in the pipeline.
-        void buildBindingPlan(PipelineBindingPlan& plan, const BindingLayoutVector& layouts, const TranslatedShader& translated)
+        void buildBindingPlan(PipelineBindingPlan& plan, const BindingLayoutVector& layouts, const TranslatedShader& translated, id<MTLFunction> function)
         {
+            if (translated.usesArgumentBuffer)
+                plan.argumentBuffers.push_back({ translated.stage, translated.argumentBufferIndex, function });
+
             for (const auto& resource : translated.resources)
             {
                 if (resource.runtimeArray)
@@ -329,7 +332,7 @@ namespace nvrhi::metal
         TranslatedShader& translated = shader->translated;
         std::string error;
         if (!translateSpirvToMSL(binary, binarySize, d.shaderType, d.entryName, m_Context.mslVersionMajor, m_Context.mslVersionMinor,
-            c_BindlessDescriptorSet, 0, translated, error))
+            c_BindlessDescriptorSet, 0, false, translated, error))
         {
             m_Context.error("createShader: failed to translate '" + d.debugName + "': " + error);
             delete shader;
@@ -608,7 +611,7 @@ namespace nvrhi::metal
         result->threadGroupSize[1] = translation->threadGroupSize[1];
         result->threadGroupSize[2] = translation->threadGroupSize[2];
 
-        buildBindingPlan(result->plan, desc.bindingLayouts, *translation);
+        buildBindingPlan(result->plan, desc.bindingLayouts, *translation, function);
         getPushConstantInfo(result->pushConstantBufferIndex, result->pushConstantSize, desc.bindingLayouts, translation->usesPushConstants);
 
         return ComputePipelineHandle::Create(result);
@@ -756,8 +759,8 @@ namespace nvrhi::metal
         result->primitiveType = convertPrimitiveType(desc.primType);
         result->depthStencilState = [m_Context.device newDepthStencilStateWithDescriptor:depthStencilDescriptor];
 
-        buildBindingPlan(result->plan, desc.bindingLayouts, *vertexTranslation);
-        buildBindingPlan(result->plan, desc.bindingLayouts, *pixelTranslation);
+        buildBindingPlan(result->plan, desc.bindingLayouts, *vertexTranslation, vertexFunction);
+        buildBindingPlan(result->plan, desc.bindingLayouts, *pixelTranslation, pixelFunction);
         getPushConstantInfo(result->pushConstantBufferIndex, result->pushConstantSize, desc.bindingLayouts,
             vertexTranslation->usesPushConstants || pixelTranslation->usesPushConstants);
         result->vertexPushConstants = vertexTranslation->usesPushConstants;

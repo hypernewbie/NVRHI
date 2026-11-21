@@ -177,9 +177,13 @@ namespace nvrhi::metal
     public:
         SamplerDesc desc;
         id<MTLSamplerState> sampler = nil;
+        MTLSamplerDescriptor* descriptor = nil;
+        id<MTLSamplerState> argumentSampler = nil;
+        std::mutex mutex;
 
         const SamplerDesc& getDesc() const override { return desc; }
         Object getNativeObject(ObjectType objectType) override;
+        id<MTLSamplerState> getArgumentSampler(Context& context);
     };
 
     class Heap : public RefCounter<IHeap>
@@ -265,9 +269,7 @@ namespace nvrhi::metal
         IBindingLayout* getLayout() const override { return layout; }
     };
 
-    // A bindless descriptor table. The classic Metal binding path has no argument
-    // buffers, so the table keeps the written items and the command list binds them
-    // one array element at a time.
+    // A bindless descriptor table keeps the written items until they are bound.
     class DescriptorTable : public RefCounter<IDescriptorTable>
     {
     public:
@@ -296,6 +298,14 @@ namespace nvrhi::metal
         };
 
         std::vector<Entry> entries;
+
+        struct ArgumentBuffer
+        {
+            ShaderType stage = ShaderType::None;
+            uint32_t index = 0;
+            id<MTLFunction> function = nil;
+        };
+        std::vector<ArgumentBuffer> argumentBuffers;
 
         // The runtime sized arrays of the bindless descriptor set, one per resource
         // direction, sized to the table capacity by the translation.
@@ -471,6 +481,7 @@ namespace nvrhi::metal
         void bindResource(const BoundResource& bound, const nvrhi::BindingSetItem& item);
         void bindGraphicsResource(const BoundResource& bound, const nvrhi::BindingSetItem& item, bool vertexStage);
         void bindDescriptorTable(DescriptorTable* table, const PipelineBindingPlan& plan);
+        void bindTableArgumentBuffer(DescriptorTable* table, const PipelineBindingPlan& plan, const PipelineBindingPlan::ArgumentBuffer& argumentBuffer);
         void bindTableArray(const std::vector<nvrhi::BindingSetItem>& slots, const ResourceBinding& array);
         void bindNullResource(ResourceKind kind, uint32_t index, bool bufferArray, Format format, TextureDimension dimension,
             ShaderType stage = ShaderType::None);
@@ -664,6 +675,7 @@ namespace nvrhi::metal
 
     private:
         Context m_Context;
+        std::mutex m_NullResourcesMutex;
         id<MTLBuffer> m_NullBuffer = nil;
         std::map<std::pair<TextureDimension, Format>, id<MTLTexture>> m_NullTextures;
         // The null texture buffers, one per element format.

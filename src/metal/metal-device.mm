@@ -683,6 +683,19 @@ namespace nvrhi::metal
         return BufferHandle::Create(result);
     }
 
+    id<MTLSamplerState> Sampler::getArgumentSampler(Context& context)
+    {
+        std::lock_guard< std::mutex > lock(mutex);
+        if (!argumentSampler)
+        {
+            descriptor.supportArgumentBuffers = YES;
+            argumentSampler = [context.device newSamplerStateWithDescriptor:descriptor];
+            if (!argumentSampler)
+                context.error("getArgumentSampler: failed to create the Metal sampler");
+        }
+        return argumentSampler;
+    }
+
     SamplerHandle Device::createSampler(const SamplerDesc& d)
     {
         MTLSamplerDescriptor* descriptor = [[MTLSamplerDescriptor alloc] init];
@@ -708,6 +721,7 @@ namespace nvrhi::metal
         Sampler* result = new Sampler();
         result->desc = d;
         result->sampler = sampler;
+        result->descriptor = descriptor;
         return SamplerHandle::Create(result);
     }
 
@@ -1129,6 +1143,7 @@ namespace nvrhi::metal
 
     id<MTLBuffer> Device::getNullBuffer()
     {
+        std::lock_guard< std::mutex > lock(m_NullResourcesMutex);
         if (!m_NullBuffer)
             m_NullBuffer = [m_Context.device newBufferWithLength:256 options:MTLResourceStorageModeShared];
         return m_NullBuffer;
@@ -1136,6 +1151,7 @@ namespace nvrhi::metal
 
     id<MTLTexture> Device::getNullTexture(TextureDimension dimension, Format format)
     {
+        std::lock_guard< std::mutex > lock(m_NullResourcesMutex);
         const Format viewFormat = format == Format::UNKNOWN ? Format::RGBA8_UNORM : format;
         const auto key = std::make_pair(dimension, viewFormat);
         const auto cached = m_NullTextures.find(key);
@@ -1199,6 +1215,7 @@ namespace nvrhi::metal
 
     id<MTLTexture> Device::getNullTextureBuffer(Format format)
     {
+        std::lock_guard< std::mutex > lock(m_NullResourcesMutex);
         const Format viewFormat = format == Format::UNKNOWN ? Format::R32_UINT : format;
         const auto cached = m_NullTextureBuffers.find(viewFormat);
         if (cached != m_NullTextureBuffers.end())
@@ -1220,6 +1237,7 @@ namespace nvrhi::metal
 
     id<MTLSamplerState> Device::getNullSampler()
     {
+        std::lock_guard< std::mutex > lock(m_NullResourcesMutex);
         if (!m_NullSampler)
         {
             MTLSamplerDescriptor* descriptor = [[MTLSamplerDescriptor alloc] init];
@@ -1228,6 +1246,7 @@ namespace nvrhi::metal
             descriptor.mipFilter = MTLSamplerMipFilterNotMipmapped;
             descriptor.sAddressMode = MTLSamplerAddressModeClampToEdge;
             descriptor.tAddressMode = MTLSamplerAddressModeClampToEdge;
+            descriptor.supportArgumentBuffers = YES;
             m_NullSampler = [m_Context.device newSamplerStateWithDescriptor:descriptor];
         }
         return m_NullSampler;
