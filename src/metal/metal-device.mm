@@ -1040,8 +1040,13 @@ namespace nvrhi::metal
         if (!descriptorTable)
             return;
 
+        std::lock_guard< std::mutex > lock(descriptorTable->mutex);
+
         const BindingLayout* layout = checked_cast<BindingLayout*>(descriptorTable->layout.Get());
         if (!layout || newSize > layout->bindlessDesc.maxCapacity)
+            return;
+
+        if (newSize == descriptorTable->capacity && keepContents)
             return;
 
         for (auto& slots : descriptorTable->slots)
@@ -1053,6 +1058,7 @@ namespace nvrhi::metal
         }
 
         descriptorTable->capacity = newSize;
+        descriptorTable->invalidateArgumentBuffers();
     }
 
     // Check the descriptor's required state against the resource's permanent state.
@@ -1107,7 +1113,11 @@ namespace nvrhi::metal
     bool Device::writeDescriptorTable(IDescriptorTable* _descriptorTable, const BindingSetItem& item)
     {
         DescriptorTable* descriptorTable = checked_cast<DescriptorTable*>(_descriptorTable);
-        if (!descriptorTable || item.slot >= descriptorTable->capacity)
+        if (!descriptorTable)
+            return false;
+
+        std::unique_lock< std::mutex > lock(descriptorTable->mutex);
+        if (item.slot >= descriptorTable->capacity)
             return false;
 
         // A null write leaves the slot as it is, like the Vulkan backend does.
@@ -1118,7 +1128,7 @@ namespace nvrhi::metal
         // space. Every space of the type is written, like the Vulkan backend does,
         // because two spaces of the shader can share one table.
         const BindingLayout* layout = checked_cast<BindingLayout*>(descriptorTable->layout.Get());
-        bool matched = false;
+        size_t matched = 0;
         for (size_t space = 0; space < layout->bindlessDesc.registerSpaces.size(); ++space)
         {
             if (layout->bindlessDesc.registerSpaces[space].type != item.type)
@@ -1126,14 +1136,18 @@ namespace nvrhi::metal
 
             descriptorTable->slots[space][item.slot] = item;
 
-            // Check the descriptor type against the resource's permanent state.
-            if (item.resourceHandle)
-                verifyPermanentBindingState(item, getContext());
-
-            matched = true;
+            ++matched;
         }
 
-        return matched;
+        if (matched)
+            descriptorTable->invalidateArgumentBuffers();
+        lock.unlock();
+        if (item.resourceHandle)
+        {
+            for (size_t space = 0; space < matched; ++space)
+                verifyPermanentBindingState(item, getContext());
+        }
+        return matched != 0;
     }
 
     // ------------------------------------------------------------------ Submission
@@ -1307,6 +1321,20 @@ namespace nvrhi::metal
     }
 
 #ifdef NVRHI_METAL_TEST_HOOKS
+    test::ArgumentBufferStats Device::getArgumentBufferStats() const
+    {
+        return { argumentEncodersCreated.load(), argumentBuffersEncoded.load(), argumentBuffersReused.load(), argumentBufferLength.load(), argumentBufferDeclarations.load() };
+    }
+
+    void Device::resetArgumentBufferStats()
+    {
+        argumentEncodersCreated = 0;
+        argumentBuffersEncoded = 0;
+        argumentBuffersReused = 0;
+        argumentBufferLength = 0;
+        argumentBufferDeclarations = 0;
+    }
+
     void Device::setSubmissionHooks(const test::SubmissionHooks& hooks)
     {
         std::lock_guard< std::mutex > lock(m_Mutex);
@@ -1321,6 +1349,16 @@ namespace nvrhi::metal
     Object test::getSubmissionEvent(IDevice* device)
     {
         return static_cast<Device*>(device)->getSubmissionEvent();
+    }
+
+    test::ArgumentBufferStats test::getArgumentBufferStats(IDevice* device)
+    {
+        return static_cast<Device*>(device)->getArgumentBufferStats();
+    }
+
+    void test::resetArgumentBufferStats(IDevice* device)
+    {
+        static_cast<Device*>(device)->resetArgumentBufferStats();
     }
 #endif
 

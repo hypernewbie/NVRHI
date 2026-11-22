@@ -33,6 +33,8 @@
 #include "metal-test-hooks.h"
 #endif
 
+#include <atomic>
+#include <array>
 #include <condition_variable>
 #include <map>
 #include <memory>
@@ -272,14 +274,45 @@ namespace nvrhi::metal
     class DescriptorTable : public RefCounter<IDescriptorTable>
     {
     public:
+        struct ArgumentBuffer
+        {
+            struct Function
+            {
+                __weak id<MTLFunction> function = nil;
+            };
+            std::map<std::pair<uintptr_t, uint32_t>, Function> functions;
+            id<MTLArgumentEncoder> encoder = nil;
+            id<MTLBuffer> buffer = nil;
+            std::array<uint64_t, 18> textureLayout = {};
+            bool hasTextureLayout = false;
+            std::vector<IResource*> referenced;
+            std::map<void*, MTLResourceUsage> resources;
+        };
+
         BindingLayoutHandle layout;
         uint32_t capacity = 0;
         // Each register space has its own array of slots.
         std::vector<std::vector<BindingSetItem>> slots;
+        std::vector<ArgumentBuffer> argumentBuffers;
+        mutable std::mutex mutex;
+
+        void invalidateArgumentBuffers()
+        {
+            for (auto& argumentBuffer : argumentBuffers)
+            {
+                argumentBuffer.buffer = nil;
+                argumentBuffer.referenced.clear();
+                argumentBuffer.resources.clear();
+            }
+        }
 
         const BindingSetDesc* getDesc() const override { return nullptr; }
         IBindingLayout* getLayout() const override { return layout; }
-        uint32_t getCapacity() const override { return capacity; }
+        uint32_t getCapacity() const override
+        {
+            std::lock_guard< std::mutex > lock(mutex);
+            return capacity;
+        }
         uint32_t getFirstDescriptorIndexInHeap() const override { return 0; }
         Object getNativeObject(ObjectType objectType) override;
     };
@@ -481,7 +514,8 @@ namespace nvrhi::metal
         void bindResource(const BoundResource& bound, const nvrhi::BindingSetItem& item);
         void bindGraphicsResource(const BoundResource& bound, const nvrhi::BindingSetItem& item, bool vertexStage);
         void bindDescriptorTable(DescriptorTable* table, const PipelineBindingPlan& plan, uint32_t bindingIndex);
-        void bindTableArgumentBuffer(DescriptorTable* table, const PipelineBindingPlan& plan, const PipelineBindingPlan::ArgumentBuffer& argumentBuffer);
+        void bindTableArgumentBuffer(DescriptorTable* table, const PipelineBindingPlan& plan, const PipelineBindingPlan::ArgumentBuffer& argumentBuffer, Context& context);
+        bool encodeTableArgumentBuffer(DescriptorTable* table, const PipelineBindingPlan& plan, const PipelineBindingPlan::ArgumentBuffer& argumentBuffer, id<MTLArgumentEncoder> encoder, std::vector<IResource*>& referenced, std::map<void*, MTLResourceUsage>& resources, Context& context);
         void bindTableArray(const std::vector<nvrhi::BindingSetItem>& slots, const ResourceBinding& array);
         void bindNullResource(ResourceKind kind, uint32_t index, bool bufferArray, Format format, TextureDimension dimension,
             ShaderType stage = ShaderType::None);
@@ -535,6 +569,8 @@ namespace nvrhi::metal
         // committed. Metal keeps the Metal objects alive on its own, but the NVRHI
         // wrappers are what the command list still points at.
         std::vector<RefCountPtr<IResource>> m_ReferencedResources;
+        void* m_DeclaredArgumentBuffer = nullptr;
+        ShaderType m_DeclaredArgumentBufferStage = ShaderType::None;
 
         // The timer queries the command buffer sampled, so the submission can stamp
         // its serial on them.
@@ -569,6 +605,13 @@ namespace nvrhi::metal
 #ifdef NVRHI_METAL_TEST_HOOKS
         void setSubmissionHooks(const test::SubmissionHooks& hooks);
         Object getSubmissionEvent() const { return Object((__bridge void*)m_SubmissionEvent); }
+        test::ArgumentBufferStats getArgumentBufferStats() const;
+        void resetArgumentBufferStats();
+        std::atomic<uint64_t> argumentEncodersCreated{0};
+        std::atomic<uint64_t> argumentBuffersEncoded{0};
+        std::atomic<uint64_t> argumentBuffersReused{0};
+        std::atomic<uint64_t> argumentBufferLength{0};
+        std::atomic<uint64_t> argumentBufferDeclarations{0};
 #endif
 
         // Null resources bound to the unwritten slots of a shader array argument.

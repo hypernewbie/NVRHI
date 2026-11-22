@@ -36,6 +36,17 @@ namespace nvrhi::metal::test
         void* context = nullptr;
     };
 
+    struct ArgumentBufferStats
+    {
+        uint64_t encodersCreated = 0;
+        uint64_t buffersEncoded = 0;
+        uint64_t buffersReused = 0;
+        uint64_t bufferLength = 0;
+        uint64_t bufferDeclarations = 0;
+    };
+
     NVRHI_API void setSubmissionHooks(IDevice* device, const SubmissionHooks& hooks);
     NVRHI_API Object getSubmissionEvent(IDevice* device);
+    NVRHI_API ArgumentBufferStats getArgumentBufferStats(IDevice* device);
+    NVRHI_API void resetArgumentBufferStats(IDevice* device);
 }
