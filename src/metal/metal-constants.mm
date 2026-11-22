@@ -103,7 +103,7 @@ namespace nvrhi::metal
         return linear ? MTLSamplerMipFilterLinear : MTLSamplerMipFilterNearest;
     }
 
-    MTLSamplerAddressMode convertSamplerAddressMode(SamplerAddressMode mode)
+    MTLSamplerAddressMode convertSamplerAddressMode(SamplerAddressMode mode, bool zeroBorder)
     {
         switch (mode)
         {
@@ -111,7 +111,7 @@ namespace nvrhi::metal
         case SamplerAddressMode::Mirror: return MTLSamplerAddressModeMirrorRepeat;
         case SamplerAddressMode::MirrorOnce: return MTLSamplerAddressModeMirrorClampToEdge;
         case SamplerAddressMode::Clamp: return MTLSamplerAddressModeClampToEdge;
-        case SamplerAddressMode::Border: return MTLSamplerAddressModeClampToBorderColor;
+        case SamplerAddressMode::Border: return zeroBorder ? MTLSamplerAddressModeClampToZero : MTLSamplerAddressModeClampToBorderColor;
         default: return MTLSamplerAddressModeRepeat;
         }
     }

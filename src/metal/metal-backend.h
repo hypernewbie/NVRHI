@@ -704,7 +704,7 @@ namespace nvrhi::metal
     MTLPixelFormat convertFormat(Format format);
     MTLSamplerMinMagFilter convertSamplerFilter(bool linear);
     MTLSamplerMipFilter convertSamplerMipFilter(bool linear);
-    MTLSamplerAddressMode convertSamplerAddressMode(SamplerAddressMode mode);
+    MTLSamplerAddressMode convertSamplerAddressMode(SamplerAddressMode mode, bool zeroBorder);
     MTLSamplerBorderColor convertSamplerBorderColor(const Color& color);
     MTLCompareFunction convertCompareFunc(ComparisonFunc op);
     MTLCompareFunction convertSamplerCompareFunc(ComparisonFunc op);

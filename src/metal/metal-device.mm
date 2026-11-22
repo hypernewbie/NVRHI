@@ -702,10 +702,12 @@ namespace nvrhi::metal
         descriptor.minFilter = convertSamplerFilter(d.minFilter);
         descriptor.magFilter = convertSamplerFilter(d.magFilter);
         descriptor.mipFilter = convertSamplerMipFilter(d.mipFilter);
-        descriptor.sAddressMode = convertSamplerAddressMode(d.addressU);
-        descriptor.tAddressMode = convertSamplerAddressMode(d.addressV);
-        descriptor.rAddressMode = convertSamplerAddressMode(d.addressW);
-        descriptor.borderColor = convertSamplerBorderColor(d.borderColor);
+        const bool zeroBorder = d.borderColor == Color(0.f);
+        descriptor.sAddressMode = convertSamplerAddressMode(d.addressU, zeroBorder);
+        descriptor.tAddressMode = convertSamplerAddressMode(d.addressV, zeroBorder);
+        descriptor.rAddressMode = convertSamplerAddressMode(d.addressW, zeroBorder);
+        if (!zeroBorder)
+            descriptor.borderColor = convertSamplerBorderColor(d.borderColor);
         descriptor.maxAnisotropy = d.maxAnisotropy;
         descriptor.lodMinClamp = 0.f;
         descriptor.lodMaxClamp = FLT_MAX;
