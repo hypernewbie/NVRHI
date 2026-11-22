@@ -207,16 +207,13 @@ namespace nvrhi::metal
         if (cached != views.end())
             return cached->second;
 
-        MTLTextureViewDescriptor* descriptor = [[MTLTextureViewDescriptor alloc] init];
-        descriptor.pixelFormat = convertFormat(viewFormat);
-        descriptor.textureType = dimension == TextureDimension::Unknown ? texture.textureType : convertViewTextureType(dimension);
-        descriptor.levelRange = NSMakeRange(resolved.baseMipLevel, resolved.numMipLevels);
-        descriptor.sliceRange = NSMakeRange(resolved.baseArraySlice, resolved.numArraySlices);
-        descriptor.swizzle = MTLTextureSwizzleChannelsMake(
+        MTLTextureSwizzleChannels swizzle = MTLTextureSwizzleChannelsMake(
             convertComponentSwizzle(viewMapping.r), convertComponentSwizzle(viewMapping.g),
             convertComponentSwizzle(viewMapping.b), convertComponentSwizzle(viewMapping.a));
-
-        id<MTLTexture> view = [texture newTextureViewWithDescriptor:descriptor];
+        MTLTextureType textureType = dimension == TextureDimension::Unknown ? texture.textureType : convertViewTextureType(dimension);
+        id<MTLTexture> view = [texture newTextureViewWithPixelFormat:convertFormat(viewFormat) textureType:textureType
+            levels:NSMakeRange(resolved.baseMipLevel, resolved.numMipLevels)
+            slices:NSMakeRange(resolved.baseArraySlice, resolved.numArraySlices) swizzle:swizzle];
         views.emplace(key, view);
         return view;
     }
