@@ -269,6 +269,7 @@ namespace nvrhi::metal
             if (!binding || !binding->getLayout())
                 continue;
 
+            m_ReferencedResources.push_back(binding);
             const BindingLayout* layout = checked_cast<BindingLayout*>(binding->getLayout());
 
             // A descriptor table binds its slots as array elements of the bindless arrays.
@@ -946,6 +947,7 @@ namespace nvrhi::metal
             if (!binding || !binding->getLayout())
                 continue;
 
+            m_ReferencedResources.push_back(binding);
             const BindingLayout* layout = checked_cast<BindingLayout*>(binding->getLayout());
 
             // A descriptor table binds its slots as array elements of the bindless arrays.
