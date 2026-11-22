@@ -50,6 +50,19 @@
 
 namespace nvrhi::uaa
 {
+    bool metalSupportsTimerQueries(void* device)
+    {
+        id<MTLDevice> metalDevice = (__bridge id<MTLDevice>)device;
+        if (![metalDevice supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])
+            return false;
+        for (id<MTLCounterSet> set in metalDevice.counterSets)
+        {
+            if ([set.name isEqualToString:MTLCommonCounterSetTimestamp])
+                return true;
+        }
+        return false;
+    }
+
     namespace
     {
         std::string toLowerAscii(std::string value)
@@ -503,6 +516,10 @@ namespace nvrhi::uaa
                     m_DeviceInfo.deviceName = m_MtlDevice.name ? m_MtlDevice.name.UTF8String : "MetalDevice";
                     m_DeviceInfo.driverName = "Apple Metal";
                     m_DeviceInfo.metalArgumentBuffersTier2 = m_MtlDevice.argumentBuffersSupport == MTLArgumentBuffersTier2;
+                    m_DeviceInfo.metalTimerQueries = metalSupportsTimerQueries((__bridge void*)m_MtlDevice);
+                    m_DeviceInfo.samplerOpaqueWhiteBorder = std::getenv("UAA_METAL_SKIP_OPAQUE_WHITE") == nullptr;
+                    m_DeviceInfo.samplerOpaqueBlackBorder = std::getenv("UAA_METAL_SKIP_OPAQUE_BLACK") == nullptr;
+                    m_DeviceInfo.samplerMirrorOnce = std::getenv("UAA_METAL_SKIP_MIRROR_ONCE") == nullptr;
                     NSString* osVer = [[NSProcessInfo processInfo] operatingSystemVersionString];
                     m_DeviceInfo.driverVersion = osVer ? osVer.UTF8String : "Metal";
                     m_DeviceInfo.osName = "macOS";

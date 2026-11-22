@@ -508,9 +508,14 @@ namespace nvrhi::uaa
                 nvrhi::BufferDesc().setByteSize(256).setInitialState(nvrhi::ResourceStates::CopyDest).setKeepInitialState(true));
             nvrhi::BufferHandle bufB = valDev->createBuffer(
                 nvrhi::BufferDesc().setByteSize(256).setInitialState(nvrhi::ResourceStates::CopySource).setKeepInitialState(true));
-            nvrhi::TimerQueryHandle tq = valDev->createTimerQuery();
+            const bool timerQueriesSupported = fix.api() != nvrhi::GraphicsAPI::METAL || fix.deviceInfo().metalTimerQueries;
+            nvrhi::TimerQueryHandle tq;
+            if (timerQueriesSupported)
+                tq = valDev->createTimerQuery();
+            else
+                ctx.note("Skipping timer query validation because Metal timestamp counters are unavailable");
             nvrhi::CommandListHandle cmd = valDev->createCommandList();
-            UAA_CHECK(bufA != nullptr && bufB != nullptr && tq != nullptr && cmd != nullptr, "Setup handles must not be null");
+            UAA_CHECK(bufA != nullptr && bufB != nullptr && (tq != nullptr || !timerQueriesSupported) && cmd != nullptr, "Setup handles must not be null");
 
             const uint32_t dummyWord = 0x12345678u;
 
@@ -521,8 +526,11 @@ namespace nvrhi::uaa
             cmd->dispatch(1, 1, 1);
             cmd->writeBuffer(bufA, &dummyWord, sizeof(dummyWord), 0);
             cmd->copyBuffer(bufA, 0, bufB, 0, 16);
-            cmd->beginTimerQuery(tq);
-            cmd->endTimerQuery(tq);
+            if (tq)
+            {
+                cmd->beginTimerQuery(tq);
+                cmd->endTimerQuery(tq);
+            }
             cmd->close();
 
             // Double open and missing pipeline state errors.
@@ -535,11 +543,14 @@ namespace nvrhi::uaa
             // Recording and closing after close.
             cmd->writeBuffer(bufA, &dummyWord, sizeof(dummyWord), 0);
             cmd->copyBuffer(bufA, 0, bufB, 0, 16);
-            cmd->beginTimerQuery(tq);
-            cmd->endTimerQuery(tq);
+            if (tq)
+            {
+                cmd->beginTimerQuery(tq);
+                cmd->endTimerQuery(tq);
+            }
             cmd->close();
 
-            UAA_CHECK(guard.errorCount() >= 10, "Expected validation errors for command ordering violations");
+            UAA_CHECK(guard.errorCount() >= (tq ? 10 : 6), "Expected validation errors for command ordering violations");
 
             // Drop without submitting invalid command list.
             cmd = nullptr;

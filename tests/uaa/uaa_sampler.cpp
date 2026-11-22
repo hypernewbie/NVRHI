@@ -292,21 +292,31 @@ namespace nvrhi::uaa
                 { nvrhi::SamplerAddressMode::Clamp,  nvrhi::Color(1.f),                cRed,         cYellow,      "Clamp" },
                 { nvrhi::SamplerAddressMode::Wrap,   nvrhi::Color(1.f),                cYellow,      cRed,         "Wrap" },
                 { nvrhi::SamplerAddressMode::Mirror, nvrhi::Color(1.f),                cRed,         cYellow,      "Mirror" },
-                { nvrhi::SamplerAddressMode::Border, nvrhi::Color(1.f, 1.f, 1.f, 1.f), cWhite,       cWhite,       "BorderWhite" },
-                { nvrhi::SamplerAddressMode::Border, nvrhi::Color(0.f, 0.f, 0.f, 1.f), cBlackOpaque, cBlackOpaque, "BorderBlackOpaque" },
                 { nvrhi::SamplerAddressMode::Border, nvrhi::Color(0.f, 0.f, 0.f, 0.f), cBlackTrans,  cBlackTrans,  "BorderBlackTransparent" }
             };
 
+            if (fix.deviceInfo().samplerOpaqueWhiteBorder)
+                cases.push_back({ nvrhi::SamplerAddressMode::Border, nvrhi::Color(1.f, 1.f, 1.f, 1.f), cWhite, cWhite, "BorderWhite" });
+            else
+                ctx.note("Skipping opaque white border sampling");
+
+            if (fix.deviceInfo().samplerOpaqueBlackBorder)
+                cases.push_back({ nvrhi::SamplerAddressMode::Border, nvrhi::Color(0.f, 0.f, 0.f, 1.f), cBlackOpaque, cBlackOpaque, "BorderBlackOpaque" });
+            else
+                ctx.note("Skipping opaque black border sampling");
+
             const bool mirrorOnceValid = (fix.api() != nvrhi::GraphicsAPI::VULKAN) ||
                 hasExtension(fix.deviceInfo(), "VK_KHR_sampler_mirror_clamp_to_edge");
-            if (mirrorOnceValid)
+            if (mirrorOnceValid && fix.deviceInfo().samplerMirrorOnce)
             {
                 cases.push_back({ nvrhi::SamplerAddressMode::MirrorOnce, nvrhi::Color(1.f), cRed, cYellow, "MirrorOnce" });
             }
-            else
+            else if (!mirrorOnceValid)
             {
                 ctx.note("Skipping MirrorOnce on Vulkan because VK_KHR_sampler_mirror_clamp_to_edge is not enabled");
             }
+            else
+                ctx.note("Skipping MirrorOnce because Metal does not support it");
 
             for (const AddrCase& ac : cases)
             {

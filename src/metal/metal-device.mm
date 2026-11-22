@@ -706,7 +706,7 @@ namespace nvrhi::metal
         descriptor.sAddressMode = convertSamplerAddressMode(d.addressU, zeroBorder);
         descriptor.tAddressMode = convertSamplerAddressMode(d.addressV, zeroBorder);
         descriptor.rAddressMode = convertSamplerAddressMode(d.addressW, zeroBorder);
-        if (!zeroBorder)
+        if (!zeroBorder && (d.addressU == SamplerAddressMode::Border || d.addressV == SamplerAddressMode::Border || d.addressW == SamplerAddressMode::Border))
             descriptor.borderColor = convertSamplerBorderColor(d.borderColor);
         descriptor.maxAnisotropy = d.maxAnisotropy;
         descriptor.lodMinClamp = 0.f;

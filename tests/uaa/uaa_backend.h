@@ -55,6 +55,10 @@ namespace nvrhi::uaa
         bool vulkanSamplerFilterMinmax = false;
         bool vulkanShader16Bit = false;
         bool metalArgumentBuffersTier2 = false;
+        bool metalTimerQueries = false;
+        bool samplerOpaqueWhiteBorder = true;
+        bool samplerOpaqueBlackBorder = true;
+        bool samplerMirrorOnce = true;
         std::vector<std::string> enabledExtensions;
     };
 
@@ -159,6 +163,8 @@ namespace nvrhi::uaa
 #endif
 
 #if defined(UAA_WITH_METAL) && UAA_WITH_METAL
+    bool metalSupportsTimerQueries(void* device);
+
     std::unique_ptr<IBackendContext> createMetalBackend(
         const BackendConfig& config,
         nvrhi::IMessageCallback* messageCallback,

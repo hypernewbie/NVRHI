@@ -38,6 +38,17 @@ namespace nvrhi::uaa
 {
     namespace
     {
+        bool supportsTimerQueries(const TestFixture& fix)
+        {
+            return fix.api() != nvrhi::GraphicsAPI::METAL || fix.deviceInfo().metalTimerQueries;
+        }
+
+        void requireTimerQueries(TestContext& ctx)
+        {
+            if (!supportsTimerQueries(*ctx.fixture))
+                ctx.skip("Metal timestamp counters are unavailable");
+        }
+
         struct CopyAddParams
         {
             uint32_t count = 0;
@@ -354,6 +365,7 @@ namespace nvrhi::uaa
 
         void testTimerQuery(TestContext& ctx)
         {
+            requireTimerQueries(ctx);
             TestFixture& fix = *ctx.fixture;
             nvrhi::IDevice* dev = fix.device();
             UAA_CHECK(dev != nullptr, "Active device must not be null");
@@ -430,6 +442,7 @@ namespace nvrhi::uaa
 
         void testMetalTimerSubmission(TestContext& ctx)
         {
+            requireTimerQueries(ctx);
             TestFixture& fix = *ctx.fixture;
             if (fix.api() != nvrhi::GraphicsAPI::METAL)
                 ctx.skip("Requires the Metal backend");
@@ -474,6 +487,7 @@ namespace nvrhi::uaa
 
         void testMetalTimerNested(TestContext& ctx)
         {
+            requireTimerQueries(ctx);
             TestFixture& fix = *ctx.fixture;
             if (fix.api() != nvrhi::GraphicsAPI::METAL)
                 ctx.skip("Requires the Metal backend");
@@ -515,6 +529,7 @@ namespace nvrhi::uaa
 
         void testMetalTimerLifetime(TestContext& ctx)
         {
+            requireTimerQueries(ctx);
             TestFixture& fix = *ctx.fixture;
             if (fix.api() != nvrhi::GraphicsAPI::METAL)
                 ctx.skip("Requires the Metal backend");
@@ -565,6 +580,7 @@ namespace nvrhi::uaa
 
         void testUnsupportedOrUnresolvedTimerQuery(TestContext& ctx)
         {
+            requireTimerQueries(ctx);
             TestFixture& fix = *ctx.fixture;
             nvrhi::IDevice* dev = fix.device();
             UAA_CHECK(dev != nullptr, "Active device must not be null");
@@ -737,8 +753,16 @@ namespace nvrhi::uaa
 #endif
             }
 
-            nvrhi::TimerQueryHandle tq = valDev->createTimerQuery();
-            UAA_CHECK(tq != nullptr, "createTimerQuery returned null");
+            nvrhi::TimerQueryHandle tq;
+            if (supportsTimerQueries(fix))
+            {
+                tq = valDev->createTimerQuery();
+                UAA_CHECK(tq != nullptr, "createTimerQuery returned null");
+            }
+            else
+            {
+                ctx.note("Skipping timer query validation because Metal timestamp counters are unavailable");
+            }
 
             nvrhi::CommandListHandle cmd = valDev->createCommandList();
             UAA_CHECK(cmd != nullptr, "createCommandList returned null");
@@ -746,16 +770,22 @@ namespace nvrhi::uaa
             ExpectErrorsGuard guard(fix);
 
             // Recording query/marker commands on an unopened command list must trigger validation errors.
-            cmd->beginTimerQuery(tq);
-            cmd->endTimerQuery(tq);
+            if (tq)
+            {
+                cmd->beginTimerQuery(tq);
+                cmd->endTimerQuery(tq);
+            }
             cmd->beginMarker("invalid_unopened");
             cmd->endMarker();
 
             // Open and close cleanly, then record after close without executing.
             cmd->open();
             cmd->close();
-            cmd->beginTimerQuery(tq);
-            cmd->endTimerQuery(tq);
+            if (tq)
+            {
+                cmd->beginTimerQuery(tq);
+                cmd->endTimerQuery(tq);
+            }
             cmd->endMarker();
 
             // Executing a Graphics command list on a Compute queue must be rejected by validation.

@@ -269,6 +269,8 @@ namespace nvrhi::uaa
         {
             StandaloneDevice device(*ctx.fixture);
             UAA_CHECK(device.raw && device.active, "device creation failed");
+            if (!metalSupportsTimerQueries(device.raw->getNativeDevice().pointer))
+                ctx.skip("Metal timestamp counters are unavailable");
             TimerQueryHandle query = device.active->createTimerQuery();
             CommandListHandle command = device.active->createCommandList();
             UAA_CHECK(query && command, "timer resources are missing");
@@ -297,6 +299,8 @@ namespace nvrhi::uaa
         {
             StandaloneDevice device(*ctx.fixture);
             UAA_CHECK(device.raw && device.active, "device creation failed");
+            if (!metalSupportsTimerQueries(device.raw->getNativeDevice().pointer))
+                ctx.skip("Metal timestamp counters are unavailable");
             constexpr uint32_t threadCount = 8;
             constexpr uint32_t queriesPerThread = 4;
             std::vector<TimerQueryHandle> queries(threadCount * queriesPerThread);
@@ -346,6 +350,8 @@ namespace nvrhi::uaa
             ExpectErrorsGuard guard(*ctx.fixture);
             StandaloneDevice device(*ctx.fixture);
             UAA_CHECK(device.raw && device.active, "device creation failed");
+            if (!metalSupportsTimerQueries(device.raw->getNativeDevice().pointer))
+                ctx.skip("Metal timestamp counters are unavailable");
             TimerQueryHandle query = device.active->createTimerQuery();
             CommandListHandle command = device.active->createCommandList();
             BufferHandle buffer = device.active->createBuffer(BufferDesc().setByteSize(1024 * 1024)
