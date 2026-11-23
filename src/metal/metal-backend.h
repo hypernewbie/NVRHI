@@ -745,6 +745,7 @@ namespace nvrhi::metal
     };
 
     MTLPixelFormat convertFormat(Format format);
+    bool isPacked16BitColorFormat(Format format);
     MTLSamplerMinMagFilter convertSamplerFilter(bool linear);
     MTLSamplerMipFilter convertSamplerMipFilter(bool linear);
     MTLSamplerAddressMode convertSamplerAddressMode(SamplerAddressMode mode, bool zeroBorder);

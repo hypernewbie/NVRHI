@@ -185,9 +185,20 @@ namespace nvrhi::metal
         const TextureSubresourceSet resolved = subresources.resolve(desc, true);
         const Format viewFormat = format == Format::UNKNOWN ? desc.format : format;
 
-        // The mapping is already resolved, so an identity override keeps the identity
-        // instead of falling back to the default mapping of the texture.
-        const ComponentMapping viewMapping = componentMapping;
+        ComponentMapping viewMapping = componentMapping;
+        if (isPacked16BitColorFormat(viewFormat))
+        {
+            // Match the Vulkan packed layouts before applying the SRV mapping.
+            using Swizzle = ComponentSwizzle;
+            const Swizzle bgra[] = { Swizzle::B, Swizzle::G, Swizzle::R, Swizzle::A };
+            const Swizzle gbar[] = { Swizzle::G, Swizzle::B, Swizzle::A, Swizzle::R };
+            const Swizzle* channels = viewFormat == Format::BGRA4_UNORM ? gbar : bgra;
+            const auto remap = [channels](Swizzle channel)
+            {
+                return channel <= Swizzle::A ? channels[uint8_t(channel)] : channel;
+            };
+            viewMapping = { remap(componentMapping.r), remap(componentMapping.g), remap(componentMapping.b), remap(componentMapping.a) };
+        }
 
         if (subresources.isEntireTexture(desc) && viewFormat == desc.format && viewMapping.isIdentity())
             return texture;

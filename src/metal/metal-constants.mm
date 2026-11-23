@@ -61,6 +61,9 @@ namespace nvrhi::metal
         case Format::SRGBA8_UNORM:  return MTLPixelFormatRGBA8Unorm_sRGB;
         case Format::SBGRA8_UNORM:  return MTLPixelFormatBGRA8Unorm_sRGB;
         case Format::SBGRX8_UNORM:  return MTLPixelFormatBGRA8Unorm_sRGB; // Metal has no X channel
+        case Format::BGRA4_UNORM:       return MTLPixelFormatABGR4Unorm;
+        case Format::B5G6R5_UNORM:      return MTLPixelFormatB5G6R5Unorm;
+        case Format::B5G5R5A1_UNORM:    return MTLPixelFormatA1BGR5Unorm;
         case Format::R10G10B10A2_UNORM: return MTLPixelFormatRGB10A2Unorm;
         case Format::R11G11B10_FLOAT:   return MTLPixelFormatRG11B10Float;
         case Format::RGBA16_UINT:   return MTLPixelFormatRGBA16Uint;
@@ -91,6 +94,11 @@ namespace nvrhi::metal
         case Format::BC7_UNORM_SRGB: return MTLPixelFormatBC7_RGBAUnorm_sRGB;
         default:                   return MTLPixelFormatInvalid;
         }
+    }
+
+    bool isPacked16BitColorFormat(Format format)
+    {
+        return format == Format::BGRA4_UNORM || format == Format::B5G6R5_UNORM || format == Format::B5G5R5A1_UNORM;
     }
 
     MTLSamplerMinMagFilter convertSamplerFilter(bool linear)

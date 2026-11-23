@@ -53,7 +53,7 @@ namespace nvrhi::metal
         const Format viewFormat = format == Format::UNKNOWN ? Format::R32_UINT : format;
         const MTLPixelFormat pixelFormat = convertFormat(viewFormat);
         const FormatInfo& formatInfo = getFormatInfo(viewFormat);
-        if (pixelFormat == MTLPixelFormatInvalid || formatInfo.bytesPerBlock == 0)
+        if (pixelFormat == MTLPixelFormatInvalid || isPacked16BitColorFormat(viewFormat) || formatInfo.bytesPerBlock == 0)
         {
             context.error("getTypedBufferView: the typed buffer format is not supported");
             return nil;
@@ -338,6 +338,12 @@ namespace nvrhi::metal
                 m_Context.error("createTexture: the sample count is not supported by the device");
                 return nullptr;
             }
+        }
+
+        if (isPacked16BitColorFormat(d.format) && (d.isRenderTarget || d.isUAV || queryFormatSupport(d.format) == FormatSupport::None))
+        {
+            m_Context.error("createTexture: packed texture format does not support the requested usage");
+            return nullptr;
         }
 
         MTLTextureUsage usage = 0;
@@ -1609,6 +1615,11 @@ namespace nvrhi::metal
         const MTLPixelFormat pixelFormat = convertFormat(format);
         if (pixelFormat == MTLPixelFormatInvalid)
             return FormatSupport::None;
+
+        if (isPacked16BitColorFormat(format))
+            return [m_Context.device supportsFamily:MTLGPUFamilyApple2]
+                ? FormatSupport::Texture | FormatSupport::ShaderLoad | FormatSupport::ShaderSample
+                : FormatSupport::None;
 
         const FormatInfo& info = getFormatInfo(format);
         if (info.blockSize > 1)

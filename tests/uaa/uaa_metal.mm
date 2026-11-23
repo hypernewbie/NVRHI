@@ -878,7 +878,93 @@ namespace nvrhi::uaa
         }
     }
 
+    static void testMetalPackedTextureSampling(TestContext& ctx)
+    {
+        UAA_CHECK(ctx.fixture != nullptr, "Fixture must be initialised");
+        TestFixture& fix = *ctx.fixture;
+        if (fix.api() != nvrhi::GraphicsAPI::METAL)
+            UAA_SKIP("Requires Metal");
+
+        nvrhi::IDevice* device = fix.device();
+        id<MTLDevice> native = (__bridge id<MTLDevice>)device->getNativeObject(nvrhi::ObjectTypes::Metal_Device).pointer;
+        if (![native supportsFamily:MTLGPUFamilyApple2])
+            UAA_SKIP("Requires Apple GPU packed texture formats");
+
+        const nvrhi::ShaderHandle shader = fix.createShader("cs_sampler_test", nvrhi::ShaderType::Compute);
+        const nvrhi::BindingLayoutHandle layout = device->createBindingLayout(
+            fix.makeBindingLayoutDesc(nvrhi::ShaderType::Compute)
+                .addItem(nvrhi::BindingLayoutItem::Texture_SRV(0))
+                .addItem(nvrhi::BindingLayoutItem::Sampler(1))
+                .addItem(nvrhi::BindingLayoutItem::StructuredBuffer_UAV(2))
+                .addItem(nvrhi::BindingLayoutItem::ConstantBuffer(3)));
+        const nvrhi::ComputePipelineHandle pipeline = device->createComputePipeline(
+            nvrhi::ComputePipelineDesc().setComputeShader(shader).addBindingLayout(layout));
+        const nvrhi::SamplerHandle sampler = device->createSampler(nvrhi::SamplerDesc().setAllFilters(false));
+        const nvrhi::BufferHandle output = device->createBuffer(nvrhi::BufferDesc()
+            .setByteSize(32).setStructStride(16).setCanHaveUAVs(true)
+            .enableAutomaticStateTracking(nvrhi::ResourceStates::Common));
+        const struct
+        {
+            float origin[2], step[2], lod;
+            uint32_t width, height, mode;
+        } params = { { 0.25f, 0.5f }, { 0.5f, 0.f }, 0.f, 2, 1, 0 };
+        const nvrhi::BufferHandle constants = device->createBuffer(nvrhi::BufferDesc()
+            .setByteSize(sizeof(params)).setIsConstantBuffer(true)
+            .enableAutomaticStateTracking(nvrhi::ResourceStates::Common));
+        UAA_CHECK(pipeline && sampler && output && constants, "Failed to create sampling resources");
+        fix.uploadBuffer(constants, &params, sizeof(params));
+
+        const struct
+        {
+            nvrhi::Format format;
+            uint16_t pixels[2];
+            float expected[8];
+        } cases[] = {
+            { nvrhi::Format::B5G6R5_UNORM,   { 0x001f, 0xffe0 }, { 1.f, 0.f, 0.f, 1.f, 0.f, 1.f, 1.f, 1.f } },
+            { nvrhi::Format::B5G5R5A1_UNORM, { 0x003e, 0xffc1 }, { 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 1.f, 1.f } },
+            { nvrhi::Format::BGRA4_UNORM,    { 0xa637, 0x5c92 }, { 6.f / 15, 3.f / 15, 7.f / 15, 10.f / 15, 12.f / 15, 9.f / 15, 2.f / 15, 5.f / 15 } },
+        };
+
+        for (const auto& entry : cases)
+        {
+            const std::string name = nvrhi::getFormatInfo(entry.format).name;
+            const auto required = nvrhi::FormatSupport::Texture | nvrhi::FormatSupport::ShaderLoad | nvrhi::FormatSupport::ShaderSample;
+            UAA_CHECK_EQ(device->queryFormatSupport(entry.format), required, name + " must support sampled textures");
+            const nvrhi::TextureHandle texture = device->createTexture(nvrhi::TextureDesc()
+                .setWidth(2).setHeight(1).setFormat(entry.format)
+                .enableAutomaticStateTracking(nvrhi::ResourceStates::CopyDest));
+            UAA_CHECK(texture != nullptr, "Failed to create " + name);
+            fix.uploadTexture2D(texture, 0, 0, entry.pixels, sizeof(entry.pixels));
+
+            std::vector<uint8_t> pixels;
+            fix.readbackTexture2D(texture, 0, 0, pixels);
+            UAA_CHECK_EQ(pixels.size(), sizeof(entry.pixels), name + " readback size");
+            UAA_CHECK(std::memcmp(pixels.data(), entry.pixels, pixels.size()) == 0, name + " readback changed packed bytes");
+
+            const nvrhi::BindingSetHandle set = device->createBindingSet(nvrhi::BindingSetDesc()
+                .addItem(nvrhi::BindingSetItem::Texture_SRV(0, texture))
+                .addItem(nvrhi::BindingSetItem::Sampler(1, sampler))
+                .addItem(nvrhi::BindingSetItem::StructuredBuffer_UAV(2, output))
+                .addItem(nvrhi::BindingSetItem::ConstantBuffer(3, constants)), layout);
+            UAA_CHECK(set != nullptr, "Failed to bind " + name);
+
+            nvrhi::CommandListHandle cmd = device->createCommandList();
+            UAA_CHECK(cmd != nullptr, "Failed to create command list");
+            cmd->open();
+            cmd->setComputeState(nvrhi::ComputeState().setPipeline(pipeline).addBindingSet(set));
+            cmd->dispatch(1, 1, 1);
+            cmd->close();
+            fix.submitAndWait(cmd);
+
+            float actual[8] = {};
+            fix.readbackBuffer(output, actual, sizeof(actual));
+            for (size_t i = 0; i < std::size(actual); ++i)
+                UAA_CHECK_NEAR(actual[i], entry.expected[i], 0.001f, name + " sample component " + std::to_string(i));
+        }
+    }
+
     UAA_REGISTER_TEST("NAT.Metal", "native,metal", testMetalNative);
+    UAA_REGISTER_TEST("TEX.MetalPackedTextureSampling", "core,metal", testMetalPackedTextureSampling);
     static void testMetalMissingCommandBuffer(TestContext& ctx)
     {
         UAA_CHECK(ctx.fixture != nullptr, "Fixture must be initialised");
