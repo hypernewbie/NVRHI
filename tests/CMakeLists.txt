@@ -24,9 +24,9 @@ get_property(memory_tests DIRECTORY PROPERTY TESTS)
 set_tests_properties(${memory_tests} PROPERTIES TIMEOUT 30)
 
 # [UAA] - START
-if(NVRHI_WITH_METAL)
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     add_executable(nvrhi_metal_framebuffer metal-framebuffer.cpp)
-    target_link_libraries(nvrhi_metal_framebuffer PRIVATE ${nvrhi_metal_target})
+    target_link_libraries(nvrhi_metal_framebuffer PRIVATE nvrhi)
     add_test(NAME metal_framebuffer COMMAND nvrhi_metal_framebuffer)
 endif()
 # [UAA] - END

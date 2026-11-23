@@ -30,6 +30,8 @@
 
 namespace nvrhi::metal
 {
+    namespace spirv_cross = ::SPIRV_CROSS_NAMESPACE;
+
     namespace
     {
         struct ResourceEntry
