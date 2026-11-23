@@ -472,14 +472,20 @@ namespace nvrhi::metal
         const uint32_t width = getMipSize(desc.width, mipLevel);
         const uint32_t height = getMipSize(desc.height, mipLevel);
         const uint32_t depth = desc.dimension == TextureDimension::Texture3D ? getMipSize(desc.depth, mipLevel) : 1;
-        const uint32_t bytesPerPixel = getFormatInfo(desc.format).bytesPerBlock;
-        if (bytesPerPixel == 0)
+        const FormatInfo& formatInfo = getFormatInfo(desc.format);
+        const uint32_t bytesPerBlock = formatInfo.bytesPerBlock;
+        if (bytesPerBlock == 0)
             return;
 
-        const uint64_t sourceRowPitch = rowPitch ? rowPitch : uint64_t(width) * bytesPerPixel;
-        const uint64_t sourceDepthPitch = depthPitch ? depthPitch : sourceRowPitch * height;
+        // Compressed formats address rows and images in blocks, not texels.
+        const uint32_t blockSize = formatInfo.blockSize > 1 ? formatInfo.blockSize : 1;
+        const uint32_t widthInBlocks = ( width + blockSize - 1 ) / blockSize;
+        const uint32_t heightInBlocks = ( height + blockSize - 1 ) / blockSize;
+
+        const uint64_t sourceRowPitch = rowPitch ? rowPitch : uint64_t(widthInBlocks) * bytesPerBlock;
+        const uint64_t sourceDepthPitch = depthPitch ? depthPitch : sourceRowPitch * heightInBlocks;
         const uint64_t alignedRowPitch = alignSize(sourceRowPitch, kBlitRowAlignment);
-        const uint64_t alignedDepthPitch = alignedRowPitch * height;
+        const uint64_t alignedDepthPitch = alignedRowPitch * heightInBlocks;
 
         id<MTLBuffer> source = [m_Device->getContext().device newBufferWithLength:alignedDepthPitch * depth options:MTLResourceStorageModeShared];
         if (!source)
@@ -488,7 +494,7 @@ namespace nvrhi::metal
         uint8_t* destination = (uint8_t*)source.contents;
         const uint8_t* sourceData = (const uint8_t*)data;
         for (uint32_t z = 0; z < depth; ++z)
-            for (uint32_t y = 0; y < height; ++y)
+            for (uint32_t y = 0; y < heightInBlocks; ++y)
                 memcpy(destination + z * alignedDepthPitch + y * alignedRowPitch, sourceData + z * sourceDepthPitch + y * sourceRowPitch, sourceRowPitch);
 
         [getBlitEncoder() copyFromBuffer:source sourceOffset:0 sourceBytesPerRow:alignedRowPitch sourceBytesPerImage:alignedDepthPitch
