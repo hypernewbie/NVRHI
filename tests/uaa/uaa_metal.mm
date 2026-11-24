@@ -963,8 +963,49 @@ namespace nvrhi::uaa
         }
     }
 
+    static void testMetalWrappedRenderTargetClear(TestContext& ctx)
+    {
+        UAA_CHECK(ctx.fixture != nullptr, "Fixture must be initialised");
+        TestFixture& fix = *ctx.fixture;
+        if (fix.api() != nvrhi::GraphicsAPI::METAL)
+            UAA_SKIP("Requires Metal");
+
+        nvrhi::IDevice* device = fix.device();
+        id<MTLDevice> native = (__bridge id<MTLDevice>)device->getNativeObject(nvrhi::ObjectTypes::Metal_Device).pointer;
+        const nvrhi::TextureDesc desc = nvrhi::TextureDesc().setWidth(4).setHeight(4).setFormat(nvrhi::Format::SBGRA8_UNORM)
+            .setIsRenderTarget(true);
+        const nvrhi::TextureHandle owned = device->createTexture(desc);
+        UAA_CHECK(owned != nullptr, "Failed to create render target");
+
+        MTLTextureDescriptor* nativeDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm_sRGB
+            width:desc.width height:desc.height mipmapped:NO];
+        nativeDesc.storageMode = MTLStorageModePrivate;
+        nativeDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        id<MTLTexture> nativeTexture = [native newTextureWithDescriptor:nativeDesc];
+        UAA_CHECK(nativeTexture != nil, "Failed to create native render target");
+        const nvrhi::TextureHandle wrapped = device->createHandleForNativeTexture(nvrhi::ObjectTypes::Metal_Texture,
+            nvrhi::Object((__bridge void*)nativeTexture), desc);
+        UAA_CHECK(wrapped != nullptr, "Failed to wrap native render target");
+
+        const nvrhi::CommandListHandle cmd = device->createCommandList();
+        UAA_CHECK(cmd != nullptr, "Failed to create command list");
+        const nvrhi::Color clearColor(0.25f, 0.5f, 0.75f, 1.f);
+        cmd->open();
+        cmd->clearTextureFloat(owned, nvrhi::AllSubresources, clearColor);
+        cmd->clearTextureFloat(wrapped, nvrhi::AllSubresources, clearColor);
+        cmd->close();
+        fix.submitAndWait(cmd);
+
+        std::vector<uint8_t> expected, actual;
+        fix.readbackTexture2D(owned, 0, 0, expected);
+        UAA_CHECK_EQ(expected.size(), size_t(desc.width * desc.height * 4), "Unexpected sRGB readback size");
+        fix.readbackTexture2D(wrapped, 0, 0, actual);
+        UAA_CHECK(actual == expected, "Wrapped clear must match an owned sRGB render target");
+    }
+
     UAA_REGISTER_TEST("NAT.Metal", "native,metal", testMetalNative);
     UAA_REGISTER_TEST("TEX.MetalPackedTextureSampling", "core,metal", testMetalPackedTextureSampling);
+    UAA_REGISTER_TEST("TEX.MetalWrappedRenderTargetClear", "core,metal", testMetalWrappedRenderTargetClear);
     static void testMetalMissingCommandBuffer(TestContext& ctx)
     {
         UAA_CHECK(ctx.fixture != nullptr, "Fixture must be initialised");

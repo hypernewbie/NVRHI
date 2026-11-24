@@ -138,9 +138,6 @@ namespace nvrhi::metal
         id<MTLTexture> texture = nil;
         bool isCPUVisible = false;
 
-        // The usage the texture was created with. A colour clear needs the render target usage.
-        MTLTextureUsage usage = 0;
-
         // A virtual texture keeps its descriptor until bindTextureMemory places it on a heap.
         MTLTextureDescriptor* descriptor = nil;
 

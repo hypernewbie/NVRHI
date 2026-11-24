@@ -694,7 +694,7 @@ namespace nvrhi::metal
         const FormatInfo& info = getFormatInfo(desc.format);
         const bool clearWithRenderPass = !integer
             && ( info.kind == FormatKind::Float || info.kind == FormatKind::Normalized )
-            && ( texture->usage & MTLTextureUsageRenderTarget )
+            && ( texture->texture.usage & MTLTextureUsageRenderTarget )
             && convertFormat( desc.format ) != MTLPixelFormatInvalid;
 
         if ( clearWithRenderPass )
